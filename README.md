@@ -1,4 +1,6 @@
-# Codex 随行 0.1.6
+# Codex 随行
+
+本项目是 [faithererer/codex-remote（Codex 随行）](https://github.com/faithererer/codex-remote) 的衍生版本，以原项目的 [`v0.1.6`](https://github.com/faithererer/codex-remote/tree/v0.1.6)（`cb23277`）为基线。感谢原项目维护者及贡献者。本仓库保留原项目的提交历史、版权声明和 [MIT 许可证](LICENSE)。
 
 中文 Android 多电脑 Codex 桌面控制台。Android 10 及以上；每台 Windows x64 电脑运行一个桥接程序，对接这台电脑原来的 Codex 桌面实例。
 
@@ -8,7 +10,7 @@ An unofficial Android companion for monitoring and controlling existing Codex de
 
 ## 下载
 
-在本仓库的 [Releases](https://github.com/faithererer/codex-remote/releases) 下载 Android APK 和 Windows x64 便携包。每台电脑独立运行一个桥接并分别配对；不设置两台电脑的产品限制。
+本衍生版的构建步骤见 [构建说明](docs/BUILDING.md)。下面列出的 0.1.6 安装包由 [上游发布页](https://github.com/faithererer/codex-remote/releases/tag/v0.1.6) 提供。每台电脑独立运行一个桥接并分别配对；不设置两台电脑的产品限制。
 
 - Android：`codex-remote-0.1.6-android.apk`，Android 10 或更新版本。同一发行者的覆盖更新保留配对，不要先卸载。
 - Windows：`codex-remote-0.1.6-windows-x64.zip`，自包含便携程序，无需另装 .NET Runtime。
@@ -17,7 +19,7 @@ An unofficial Android companion for monitoring and controlling existing Codex de
 
 ## 使用
 
-1. 手机安装发布页中的 Android APK；覆盖更新保留原配对，不需要卸载。
+1. 手机安装与所用桥接配套的 Android APK；同包名、同签名的覆盖更新保留原配对。
 2. 每台电脑解压 Windows 便携包，运行 `CodexRemote.exe`。电脑上照常启动原 Codex；手机与电脑在同一 Wi-Fi／局域网时，无需开启或安装 Tailscale。外出时仍可使用两端的 Tailscale。
 3. 在电脑桥接的“选择配对网络”中选择局域网或 Tailscale 地址；手机点“添加”扫码，再在电脑确认。另一台电脑重复相同步骤。
 4. “全部关注”同时显示各电脑任务。进入任务可查看历史、实时输出，发送文字／图片、追加指示、中断、处理命令／文件审批及普通选择题。
