@@ -36,6 +36,7 @@ jobs:
           zip="codex-suixing-$version-windows-x64.zip"
           git show "$source:docs/RELEASE-$version.md" > "$RUNNER_TEMP/notes.md"
           cd bundle
+          if [[ -f "$apk.zip" ]]; then unzip -p "$apk.zip" "$apk" > "$apk"; fi
           sha256sum "$zip" "$apk" | diff -u <(tr -d '\r' < SHA256SUMS.txt) -
           unzip -tq "$zip"
           signer=$("$ANDROID_HOME/build-tools/$(ls -v "$ANDROID_HOME/build-tools" | tail -1)/apksigner" verify --print-certs "$apk")

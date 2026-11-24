@@ -52,6 +52,8 @@ gradle -p android assembleRelease testReleaseUnitTest lintRelease --console=plai
 
 也可用 SSH 上传到自己的私有仓库：在包含 `publish-personal.yml` 的独立 checkout 中，从包含源码标签的提交新建 `release-upload/v<版本>` 分支，将上述三个文件放入 `bundle/`，用 `git add -f bundle/` 提交后推送该分支。校验清单用小写 SHA-256，按 Windows ZIP、APK 顺序各写一行。工作流核对标签、证书和附件哈希后创建预发布。确认三个附件均已发布后可删除临时上传分支，安装包不会进入 `main`。
 
+超过 Git 单文件限制的 APK 可先压缩成 `<完整 APK 文件名>.zip`，ZIP 根目录内只放原名 APK。工作流解压后按清单验证原始文件，只发布原始 APK。
+
 ## 从 GitHub Actions 下载与发布 APK
 
 每次推送 `main` 或运行 **Actions → Build and Test**，Android 编译、单元测试和 lint
