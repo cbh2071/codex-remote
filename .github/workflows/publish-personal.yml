@@ -1,0 +1,45 @@
+name: Publish personal release bundle
+
+on:
+  push:
+    branches: ['release-upload/v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository == 'cbh2071/codex-remote' && github.event.repository.private
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify bundle and publish to existing source tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#release-upload/}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${tag#v}"
+          source=$(git rev-parse "refs/tags/$tag^{commit}")
+          git merge-base --is-ancestor "$source" HEAD
+          config=$(git show "$source:android/app/build.gradle.kts")
+          [[ "$config" == *"versionName = \"$version\""* ]]
+          code=$(sed -n 's/.*versionCode = \([0-9]\+\).*/\1/p' <<< "$config")
+          [[ "$code" =~ ^[1-9][0-9]*$ ]]
+          apk="codex-suixing-preview-$code-$version.apk"
+          zip="codex-suixing-$version-windows-x64.zip"
+          git show "$source:docs/RELEASE-$version.md" > "$RUNNER_TEMP/notes.md"
+          cd bundle
+          sha256sum "$zip" "$apk" | diff -u <(tr -d '\r' < SHA256SUMS.txt) -
+          unzip -tq "$zip"
+          signer=$("$ANDROID_HOME/build-tools/$(ls -v "$ANDROID_HOME/build-tools" | tail -1)/apksigner" verify --print-certs "$apk")
+          grep -Fxq 'Signer #1 certificate SHA-256 digest: 4c7c642a6c3b3b2c9823f43ea28d8053c0ac77fdf0dc3a5032c5b230f224911f' <<< "$signer"
+          gh release create "$tag" --verify-tag --prerelease --title "codex随行 $version" \
+            --notes-file "$RUNNER_TEMP/notes.md" "$apk" "$zip" SHA256SUMS.txt
+          gh release view "$tag" --json url,isDraft,assets --jq '{url,isDraft,assets:[.assets[].name]}'
