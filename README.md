@@ -2,6 +2,8 @@
 
 本项目是 [faithererer/codex-remote（Codex 随行）](https://github.com/faithererer/codex-remote) 的衍生版本，以原项目的 [`v0.1.6`](https://github.com/faithererer/codex-remote/tree/v0.1.6)（`cb23277`）为基线。感谢原项目维护者及贡献者。本仓库保留原项目的提交历史、版权声明和 [MIT 许可证](LICENSE)。
 
+**个人自用。** 我按自己的手机和电脑环境维护这个版本，更新随个人需要安排，不承诺长期维护或提供技术支持。本衍生版的问题请留在本仓库，上游作者无需为这些改动提供支持。
+
 中文 Android 多电脑 Codex 桌面控制台。Android 10 及以上；每台 Windows x64 电脑运行一个桥接程序，对接这台电脑原来的 Codex 桌面实例。
 
 An unofficial Android companion for monitoring and controlling existing Codex desktop chats on multiple Windows PCs over a local network or private Tailscale connection. No central relay, cloud account transfer, or replacement model backend.
@@ -10,10 +12,11 @@ An unofficial Android companion for monitoring and controlling existing Codex de
 
 ## 下载
 
-本衍生版的构建步骤见 [构建说明](docs/BUILDING.md)。下面列出的 0.1.6 安装包由 [上游发布页](https://github.com/faithererer/codex-remote/releases/tag/v0.1.6) 提供。每台电脑独立运行一个桥接并分别配对；不设置两台电脑的产品限制。
+从[本仓库的 Releases](https://github.com/cbh2071/codex-remote/releases) 下载自用版安装包。仓库私有期间，需要有读取权限的 GitHub 账号。
 
-- Android：`codex-remote-0.1.6-android.apk`，Android 10 或更新版本。同一发行者的覆盖更新保留配对，不要先卸载。
-- Windows：`codex-remote-0.1.6-windows-x64.zip`，自包含便携程序，无需另装 .NET Runtime。
+- Android 10 及以上使用 `codex-suixing-preview-<版本码>-<版本>.apk`。已安装本仓库旧预览版的用户可直接覆盖，保留配对记录。上游正式版使用独立包名，可与本版并存。
+- 从 0.1.12 起，在「我的电脑 → 检查并更新」直接从本仓库下载新版，电脑关机也能更新。私有仓库首次检查时点「配置仓库令牌」，填写仅此仓库的 fine-grained token，授予 Contents 只读权限。安装前仍需在 Android 系统界面确认。
+- Windows x64 使用同一 Release 中的便携 ZIP，解压后运行 `CodexRemote.exe`。
 - 发布页同时提供源码和 `SHA256SUMS.txt`。源码使用 MIT 许可证；第三方依赖遵守各自许可证。
 - 自行构建使用自己的签名密钥；不同签名不能覆盖安装维护者的 APK。私钥不随源码或 Release 公开。
 
@@ -115,7 +118,7 @@ Windows 在已连接的以太网／Wi-Fi 私有 IPv4 地址及 Tailscale IPv4 �
 
 自测命令：`CodexRemote.exe --self-test result.json`、`--api-test api-result.json`、`--smoke smoke.json`。API 自测在一台 PC 的私网地址临时使用 `48762/48763`，优先局域网，并在两种网络均存在时验证共同身份与去重；不等于两台物理 PC 测试。`--smoke` 只读原桌面，不发送任务指令。
 
-详细构建步骤见 [docs/BUILDING.md](docs/BUILDING.md)，验证范围见 [docs/VERIFICATION.md](docs/VERIFICATION.md)，接口见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。普通 CI 构建、执行隔离测试并保存可下载的 Android 调试 APK；Android Release 工作流配置原签名 Secrets 后，自动构建正式 APK 并发布到 Releases。两条流水线都不连接维护者的电脑或操作真实对话。
+本仓库的自用预览包由维护者在保存签名的电脑上构建并上传到 Releases。普通 CI 的临时调试包使用另一份签名。详细步骤见[构建说明](docs/BUILDING.md)，原项目的验证记录和接口说明见 [docs/VERIFICATION.md](docs/VERIFICATION.md) 和 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 ## 开源与反馈
 

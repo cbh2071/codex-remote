@@ -1,1 +1,4 @@
-<paths><cache-path name="documents" path="project-previews/"/></paths>
+<paths>
+    <cache-path name="documents" path="project-previews/"/>
+    <cache-path name="android-updates" path="android-updates/"/>
+</paths>

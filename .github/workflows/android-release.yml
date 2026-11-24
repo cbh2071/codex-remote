@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.repository == 'faithererer/codex-remote'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

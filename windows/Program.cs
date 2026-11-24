@@ -127,6 +127,9 @@ static class Program
             return Results.Json(await pairing.Pair(body));
         });
         app.MapGet("/api/v1/status", () => new { hostId = identity.HostId, instanceId = events.InstanceId, name = identity.Name, desktopConnected = desktop.Connected, compatible = desktop.Compatible, desktopVersion = desktop.Version, knownBuild = desktop.KnownBuild, compatibilityMode = desktop.Mode, compatibilityNote = desktop.CompatibilityNote, error = desktop.LastError, protocolVersion = 1 });
+        var androidUpdates = new AndroidUpdates(vault.Root);
+        app.MapGet("/api/v1/android-update/{channel}", (string channel) => androidUpdates.Check(channel));
+        app.MapGet("/api/v1/android-update/{channel}/{versionCode:int}/{versionName}", (string channel, int versionCode, string versionName) => androidUpdates.Download(channel, versionCode, versionName));
         app.MapGet("/api/v1/threads", async () => new { hostId = identity.HostId, instanceId = events.InstanceId, threads = await desktop.Catalog() });
         app.MapGet("/api/v1/projects", async () => new { hostId = identity.HostId, instanceId = events.InstanceId, projects = await desktop.Projects(), defaultLocation = "Codex 默认目录（由电脑创建独立工作目录）" });
         app.MapGet("/api/v1/thread-index", async (string? cursor) => new { hostId = identity.HostId, instanceId = events.InstanceId, page = await desktop.HistoryPage(cursor) });

@@ -25,6 +25,9 @@ class RemoteApplication : Application() { lateinit var repository: Repository; o
 class Repository(private val context: Context) {
     internal val tailnet = EmbeddedTailnet(context)
     private fun hostApi(host: Host) = HostApi(host, if (tailnet.enabled && connectionKind(host.url) == "Tailscale") tailnet.socketFactory(host.url) else null)
+    internal suspend fun fetchAppUpdate(progress: (Float) -> Unit): String? {
+        return fetchAndroidUpdate(context, store, progress)
+    }
     internal suspend fun toggleTailnet(enabled: Boolean) = withContext(Dispatchers.IO) {
         tailnet.setEnabled(enabled)
         synchronized(this@Repository) {

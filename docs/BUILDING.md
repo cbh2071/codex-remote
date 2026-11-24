@@ -44,6 +44,12 @@ gradle -p android assembleRelease testReleaseUnitTest lintRelease --console=plai
 完成后清除当前终端中的密码变量，不把密钥、密码或 `local.properties` 提交到 Git。
 普通 CI 不需要发布私钥；签名发布工作流通过 GitHub Secrets 在临时目录恢复密钥，结束后删除。
 
+### 发布自用版到 GitHub Releases
+
+在保留原预览签名的电脑上运行 `gradle -p android assemblePersonal testPersonalUnitTest`。`personal` 构建关闭调试，沿用 `.preview` 包名和本机原有的开发密钥。请单独备份该密钥，更换电脑时恢复同一份。该渠道的签名证书 SHA-256 为 `4c7c642a6c3b3b2c9823f43ea28d8053c0ac77fdf0dc3a5032c5b230f224911f`。
+
+每次递增 Android `versionCode` 和 `versionName`，推送源码和 `v<versionName>` 标签。在本仓库创建 Release，将 APK 命名为 `codex-suixing-preview-<versionCode>-<versionName>.apk`，一起上传 Windows ZIP 和 `SHA256SUMS.txt`。手机选择版本码最大的已发布匹配包，支持预发布，跳过草稿。更新包需通过大小、包名、版本和签名校验。0.1.11 的桥接更新入口可用 `tools/publish-android-update.mjs` 向旧手机分发一次过渡 APK；也可直接从 Releases 覆盖安装。
+
 ## 从 GitHub Actions 下载与发布 APK
 
 每次推送 `main` 或运行 **Actions → Build and Test**，Android 编译、单元测试和 lint
@@ -51,7 +57,7 @@ gradle -p android assembleRelease testReleaseUnitTest lintRelease --console=plai
 下载并解压，即可取得 `app-debug.apk`；运行摘要也有下载链接，产物保留 14 天。
 调试 APK 使用开发签名，不能覆盖正式发行版；不要卸载带有配对数据的正式版来安装它。
 
-正式 APK 使用 **Actions → Android Release**。先由维护者在
+以下为上游正式 APK 的原始流程，工作流只在上游仓库启用。由上游维护者在
 **Settings → Secrets and variables → Actions** 配置两个仓库 Secret：
 
 | Secret | 内容 |

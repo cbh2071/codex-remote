@@ -33,6 +33,11 @@ static class ApiTests
         {
             await Task.Delay(500);
             await Test("Unauthenticated HTTPS denied", async () => { using var response = await a.GetAsync("/api/v1/status"); Check(response.StatusCode == HttpStatusCode.Unauthorized); });
+            await Test("Android update metadata and APK require pairing", async () => {
+                using var check = await a.GetAsync("/api/v1/android-update/preview");
+                using var download = await a.GetAsync("/api/v1/android-update/preview/12/0.1.11");
+                Check(check.StatusCode == HttpStatusCode.Unauthorized && download.StatusCode == HttpStatusCode.Unauthorized);
+            });
             await Test("Pinned HTTPS certificate mismatch rejected", async () => { using var bad = Client(ia, 48762, true); try { await bad.GetAsync("/api/v1/status"); throw new Exception("Certificate mismatch accepted"); } catch (HttpRequestException) { } });
             var qa = Qr(pa, ia, 48762); var qb = Qr(pb, ib, 48763);
             await Test("Each independent host pairs over pinned HTTPS", async () =>
@@ -45,6 +50,23 @@ static class ApiTests
                 a.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ta); b.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tb);
             });
             await Test("Used QR cannot pair twice", async () => { using var response = await Post(a, "/api/v1/pair", Body(qa, ia)); Check(response.StatusCode == HttpStatusCode.Forbidden); });
+            await Test("Android updates select the newest complete APK in the requested channel", async () => {
+                const string update = "/api/v1/android-update/preview";
+                using var missing = await a.GetAsync(update);
+                Check(missing.StatusCode == HttpStatusCode.NoContent);
+                var folder = Directory.CreateDirectory(Path.Combine(va.Root, "android-updates", "preview")).FullName;
+                byte[] apk = [1, 2, 3];
+                await File.WriteAllBytesAsync(Path.Combine(folder, "codex-suixing-9-0.1.8.apk"), [0]);
+                await File.WriteAllBytesAsync(Path.Combine(folder, "codex-suixing-12-0.1.11.apk"), apk);
+                await File.WriteAllBytesAsync(Path.Combine(folder, "codex-suixing-13-0.1.12.apk.tmp"), [0]);
+                var metadata = JsonNode.Parse(await a.GetStringAsync(update))!;
+                Check(metadata["versionCode"]!.GetValue<int>() == 12 && metadata.S("versionName") == "0.1.11" && metadata["size"]!.GetValue<long>() == apk.Length);
+                using var download = await a.GetAsync(update + "/12/0.1.11");
+                Check(download.Content.Headers.ContentType?.MediaType == "application/vnd.android.package-archive");
+                Check((await download.Content.ReadAsByteArrayAsync()).SequenceEqual(apk));
+                using var otherChannel = await a.GetAsync("/api/v1/android-update/stable/12/0.1.11");
+                Check(otherChannel.StatusCode == HttpStatusCode.NotFound);
+            });
             await Test("Private listener checks peer address rather than untrusted forwarding headers", async () => {
                 using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/status"); request.Headers.Add("X-Forwarded-For", "8.8.8.8");
                 using var response = await a.SendAsync(request); Check(response.IsSuccessStatusCode);

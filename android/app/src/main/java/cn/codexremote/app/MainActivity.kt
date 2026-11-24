@@ -240,12 +240,23 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
 private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Boolean, monitor: () -> Unit, add: () -> Unit) {
     var editing by remember { mutableStateOf<HostState?>(null) }; var name by remember { mutableStateOf("") }; var removing by remember { mutableStateOf<HostState?>(null) }; var unlock by remember { mutableStateOf<HostState?>(null) }
     var licenses by remember { mutableStateOf(false) }
+    var updating by rememberSaveable { mutableStateOf(false) }
     var connection by remember { mutableStateOf<Host?>(null) }
     val context = LocalContext.current
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Button(onClick = add, modifier = Modifier.fillMaxWidth().height(48.dp)) { Icon(Icons.Outlined.Add, null); Text("连接电脑") } }
         item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("后台监控", modifier = Modifier.weight(1f)); Switch(checked = background, onCheckedChange = { monitor() }) } }
         item { TailnetSettings(repo) }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("应用版本 ${BuildConfig.VERSION_NAME}", modifier = Modifier.weight(1f))
+                TextButton(onClick = { updating = true }) {
+                    Icon(Icons.Outlined.SystemUpdate, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("检查并更新")
+                }
+            }
+        }
         items(hosts, key = { it.host.id }) { h -> Card(colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Text(h.host.name, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f)); Switch(checked = h.host.followed, onCheckedChange = { repo.follow(h.host.id, it) }) }
             Text(if (h.online) "在线 · ${h.threads.size} 个最近会话" else h.error, color = Forest); Text("${connectionKind(h.host.url)} · ${h.host.url}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
@@ -256,6 +267,7 @@ private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Bo
         item { Text("取消关注只停止这台电脑的连接；移除会删除手机信任。要永久撤销手机权限，请同时在那台电脑桥接窗口撤销配对。", fontSize = 13.sp) }
         item { TextButton(onClick = { licenses = true }) { Text("开源许可 · ${BuildConfig.VERSION_NAME}", fontSize = 12.sp) } }
     }
+    if (updating) AppUpdateDialog(repo) { updating = false }
     connection?.let { host -> ConnectionAddressDialog(host, repo) { connection = null } }
     if (licenses) {
         val text = remember { listOf("THIRD-PARTY-NOTICES.md", "CommonMark-LICENSE.txt", "Apache-2.0.txt").joinToString("\n\n") { file -> context.assets.open("licenses/$file").bufferedReader().use { it.readText() } } }
