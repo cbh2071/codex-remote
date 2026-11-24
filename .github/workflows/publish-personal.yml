@@ -39,8 +39,13 @@ jobs:
           if [[ -f "$apk.zip" ]]; then unzip -p "$apk.zip" "$apk" > "$apk"; fi
           sha256sum "$zip" "$apk" | diff -u <(tr -d '\r' < SHA256SUMS.txt) -
           unzip -tq "$zip"
-          signer=$("$ANDROID_HOME/build-tools/$(ls -v "$ANDROID_HOME/build-tools" | tail -1)/apksigner" verify --print-certs "$apk")
-          grep -Fxq 'Signer #1 certificate SHA-256 digest: 4c7c642a6c3b3b2c9823f43ea28d8053c0ac77fdf0dc3a5032c5b230f224911f' <<< "$signer"
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$tools/apksigner" ]]; then "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'build-tools;35.0.0'; fi
+          "$tools/apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/verification.txt"
+          grep -Fxq 'Signer #1 certificate SHA-256 digest: 4c7c642a6c3b3b2c9823f43ea28d8053c0ac77fdf0dc3a5032c5b230f224911f' "$RUNNER_TEMP/verification.txt"
           gh release create "$tag" --verify-tag --prerelease --title "codex随行 $version" \
             --notes-file "$RUNNER_TEMP/notes.md" "$apk" "$zip" SHA256SUMS.txt
           gh release view "$tag" --json url,isDraft,assets --jq '{url,isDraft,assets:[.assets[].name]}'
+          id=$(gh api "repos/$GH_REPO/releases/tags/$tag" --jq ".assets[] | select(.name == \"$apk\") | .id")
+          gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$RUNNER_TEMP/download.apk"
+          cmp "$apk" "$RUNNER_TEMP/download.apk"
