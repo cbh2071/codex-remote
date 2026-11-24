@@ -58,11 +58,13 @@ fun ModelDialog(key: ThreadKey, host: HostState?, repo: Repository, enabled: Boo
 fun EditMessageDialog(key: ThreadKey, target: JSONObject, view: JSONObject?, repo: Repository, enabled: Boolean, close: () -> Unit, submit: (JSONObject, () -> Unit) -> Unit) {
     val draftName = editDraftKey(key, target.optString("turnId"))
     var text by remember(draftName) { mutableStateOf(repo.store.get(draftName, target.optString("text"))) }
-    val latest = view?.optJSONObject("editTarget")
+    val latest = view?.optJSONArray("messages")?.objects()?.firstNotNullOfOrNull { msg ->
+        msg.optJSONObject("editTarget")?.takeIf { it.optString("turnId") == target.optString("turnId") }
+    } ?: view?.optJSONObject("editTarget")
     val fresh = view?.optString("instanceId") == target.optString("instanceId") && latest?.optString("fingerprint") == target.optString("fingerprint") && latest.optString("turnId") == target.optString("turnId")
-    AlertDialog(onDismissRequest = close, title = { Text("编辑最新消息") }, text = {
+    AlertDialog(onDismissRequest = close, title = { Text("编辑消息") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("与电脑的编辑功能相同：撤回本轮对话并重新生成回复。已经修改的文件不会自动还原；不会新建聊天或自动中断任务。", fontSize = 12.sp)
+            Text(if (target.optBoolean("earlier")) "将撤回这条消息及其后的所有轮次，再从这里重新生成。已修改的文件会保留。" else "将撤回本轮对话并重新生成回复。已修改的文件会保留。", fontSize = 12.sp)
             if (target.optString("text").isNotEmpty()) OutlinedTextField(text, { text = it; repo.store.put(draftName, it) }, modifier = Modifier.fillMaxWidth().heightIn(min = 150.dp, max = 300.dp), maxLines = 12, label = { Text("修改指令") }, enabled = enabled)
             if (!fresh) Text("电脑上的最新消息已变化，请关闭后重新打开编辑。草稿保留。", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
             else if (latest?.optBoolean("allowed") != true) Text(latest?.optString("reason").orEmpty(), fontSize = 12.sp)

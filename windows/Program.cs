@@ -15,6 +15,12 @@ static class Program
     static void Main(string[] args)
     {
         var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexRemote");
+        if (args.Contains("--enable-tailnet-pairing")) {
+            var vault = new Vault(data);
+            try { new Pairing(vault, Identity.Load(vault)).SetOwner(TailnetEnrollment.CurrentOwner().GetAwaiter().GetResult()); }
+            catch { Environment.ExitCode = 1; }
+            return;
+        }
         if (args.Contains("--self-test")) { SelfTests.Run(args.LastOrDefault(a => a.EndsWith(".json"))); return; }
         if (args.Contains("--api-test")) { ApiTests.Run(args.LastOrDefault(a => a.EndsWith(".json"))).GetAwaiter().GetResult(); return; }
         if (args.Contains("--phone-test")) { PhoneTest(args.Last(a => a.EndsWith(".json"))).GetAwaiter().GetResult(); return; }
@@ -89,7 +95,11 @@ static class Program
             try
             {
                 if (!PrivateNetwork.Allows(context.Connection.RemoteIpAddress, context.Connection.LocalIpAddress)) throw new ApiError(403, "仅接受当前局域网或 Tailscale 私网的对应连接");
-                if (context.Request.Path != "/api/v1/pair")
+                if (context.Request.Path == "/api/v1/tailnet-pair") {
+                    if (!Tailnet(context.Connection.LocalIpAddress) || !Tailnet(context.Connection.RemoteIpAddress))
+                        throw new ApiError(403, "免扫码连接仅支持 Tailscale");
+                }
+                else if (context.Request.Path != "/api/v1/pair")
                 {
                     var header = context.Request.Headers.Authorization.ToString();
                     var device = header.StartsWith("Bearer ", StringComparison.Ordinal) ? pairing.Authenticate(header[7..]) : null;
@@ -102,6 +112,12 @@ static class Program
             catch (Exception) { if (!context.Response.HasStarted) { context.Response.StatusCode = 503; await context.Response.WriteAsJsonAsync(new { error = "电脑暂时无法完成请求；请刷新状态，不要自动重发指令。" }); } }
         });
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
+        app.MapPost("/api/v1/tailnet-pair", async (HttpContext context, JsonNode body) => {
+            if (body.S("hostId") != identity.HostId) throw new ApiError(409, "电脑身份不匹配");
+            var owner = pairing.Owner ?? throw new ApiError(403, "请先在电脑桥接开启「允许我的 Tailscale 设备免扫码连接」");
+            var peer = await TailnetEnrollment.Identify(owner, context.Connection.RemoteIpAddress!, context.Connection.RemotePort, context.Connection.LocalIpAddress!);
+            return Results.Json(pairing.Enroll(owner, peer));
+        });
         app.MapPost("/api/v1/pair", async (HttpContext context, JsonNode body) =>
         {
             var remote = context.Connection.RemoteIpAddress!.ToString(); var now = DateTimeOffset.UtcNow;
@@ -110,12 +126,22 @@ static class Program
             if (body.S("hostId") != identity.HostId) throw new ApiError(409, "电脑身份不匹配");
             return Results.Json(await pairing.Pair(body));
         });
-        app.MapGet("/api/v1/status", () => new { hostId = identity.HostId, instanceId = events.InstanceId, name = identity.Name, desktopConnected = desktop.Connected, compatible = desktop.Compatible, desktopVersion = desktop.Version, knownBuild = desktop.KnownBuild, compatibilityMode = "runtime-protocol", compatibilityNote = desktop.CompatibilityNote, error = desktop.LastError, protocolVersion = 1 });
+        app.MapGet("/api/v1/status", () => new { hostId = identity.HostId, instanceId = events.InstanceId, name = identity.Name, desktopConnected = desktop.Connected, compatible = desktop.Compatible, desktopVersion = desktop.Version, knownBuild = desktop.KnownBuild, compatibilityMode = desktop.Mode, compatibilityNote = desktop.CompatibilityNote, error = desktop.LastError, protocolVersion = 1 });
         app.MapGet("/api/v1/threads", async () => new { hostId = identity.HostId, instanceId = events.InstanceId, threads = await desktop.Catalog() });
         app.MapGet("/api/v1/projects", async () => new { hostId = identity.HostId, instanceId = events.InstanceId, projects = await desktop.Projects(), defaultLocation = "Codex 默认目录（由电脑创建独立工作目录）" });
-        app.MapGet("/api/v1/threads/{id}", async (string id) => await desktop.History(id));
+        app.MapGet("/api/v1/thread-index", async (string? cursor) => new { hostId = identity.HostId, instanceId = events.InstanceId, page = await desktop.HistoryPage(cursor) });
+        app.MapGet("/api/v1/threads/{id}", async (string id, bool? fresh) => await desktop.History(id, fresh == true));
+        app.MapPost("/api/v1/threads/{id}/preview", async (string id, JsonNode body) => {
+            if (body.S("hostId") != identity.HostId || body.S("instanceId") != events.InstanceId)
+                throw new ApiError(409, "电脑连接已变化，请刷新会话");
+            return await desktop.Preview(id, body);
+        });
         app.MapGet("/api/v1/threads/{id}/fork-context", async (string id) => { var context = await desktop.ForkContext(id); context["hostId"] = identity.HostId; return context; });
-        app.MapGet("/api/v1/threads/{id}/models", async (string id) => { var models = await desktop.Models(id); models["hostId"] = identity.HostId; return models; });
+        app.MapGet("/api/v1/threads/{id}/models", async (string id, bool? nextMessage) => { var models = await desktop.Models(id, nextMessage == true); models["hostId"] = identity.HostId; return models; });
+        app.MapPost("/api/v1/threads/{id}/sidebar", async (string id, JsonNode body) => {
+            if (body.S("hostId") != identity.HostId || body.S("instanceId") != events.InstanceId) throw new ApiError(409, "电脑连接已变化，请刷新");
+            return await desktop.Sidebar(id, body);
+        });
         app.MapPost("/api/v1/threads/{id}/images/{imageId}", async (string id, string imageId, HttpContext context) =>
         {
             if (context.Request.Query["hostId"] != identity.HostId || context.Request.Query["instanceId"] != events.InstanceId) throw new ApiError(409, "电脑或实例已变化，请刷新");
@@ -188,6 +214,16 @@ static class Program
         {
             var catalog = await desktop.Catalog();
             var active = catalog.OfType<JsonNode>().FirstOrDefault(n => n.S("status") == "active") ?? catalog.FirstOrDefault();
+            if (!desktop.LiveRouter)
+            {
+                var projects = await desktop.Projects();
+                var page = await desktop.HistoryPage(null);
+                var view = active == null ? null : await desktop.History(active.S("id"), true);
+                return J.Node(new { success = active == null || view?["desktopTools"]?.GetValue<bool>() == true,
+                    desktop.Compatible, desktop.Version, compatibilityMode = desktop.Mode, threadCount = catalog.Count,
+                    projectCount = projects.Count, historyPageCount = page.Array("threads").Count, messageCount = view.Array("messages").Count,
+                    desktop.LiveRouter, elapsedMs = stopwatch.ElapsedMilliseconds, commandsSent = 0 });
+            }
             var state = active == null ? null : await desktop.Snapshot(active.S("id"), true);
             if (state != null) Compatibility.ValidateState(state, active!.S("id"));
             var models = active == null ? null : await desktop.Models(active.S("id"));
@@ -235,7 +271,15 @@ sealed class MainWindow : Form
         var rename = new Button { Text = "保存电脑名", AutoSize = true }; rename.Click += (_, _) => { var value = name.Text.Trim(); if (value.Length is < 1 or > 60) return; identity.Name = value; vault.Write("identity", identity); RefreshPair(); };
         var nameRow = new FlowLayoutPanel { Width = 550, Height = 40 }; nameRow.Controls.Add(name); nameRow.Controls.Add(rename); root.Controls.Add(nameRow);
         status.Width = 550; root.Controls.Add(status); address.Width = 550; root.Controls.Add(address);
-        root.Controls.Add(new Label { Text = "选择配对网络：同一局域网无需 Tailscale，外出时选 Tailscale", AutoSize = true });
+        var allow = new CheckBox { Text = "允许我的 Tailscale 设备免扫码连接", AutoSize = true, Checked = pairing.Owner != null };
+        allow.Click += async (_, _) => {
+            allow.Enabled = false;
+            try { pairing.SetOwner(allow.Checked ? await TailnetEnrollment.CurrentOwner() : null); }
+            catch (Exception e) { allow.Checked = pairing.Owner != null; MessageBox.Show(this, e.Message, "Tailscale"); }
+            finally { allow.Enabled = true; }
+        };
+        root.Controls.Add(allow);
+        root.Controls.Add(new Label { Text = "需要扫码配对时，选择手机可达的网络", AutoSize = true });
         root.Controls.Add(networks); networks.SelectedIndexChanged += (_, _) => { if (Endpoint.Length > 0) preferredAddress = Endpoint; RefreshPair(); };
         root.Controls.Add(qr);
         var buttons = new FlowLayoutPanel { Width = 550, Height = 46 };
@@ -246,7 +290,7 @@ sealed class MainWindow : Form
         root.Controls.Add(new Label { Text = "已配对设备（撤销立即断开，不影响其他电脑）", AutoSize = true });
         devices.Width = 550; root.Controls.Add(devices);
         var revoke = new Button { Text = "撤销选中设备", AutoSize = true }; revoke.Click += (_, _) => { if (devices.SelectedItem is Device device && MessageBox.Show(this, "撤销「" + device.Name + "」的手机权限？", "确认", MessageBoxButtons.YesNo) == DialogResult.Yes) pairing.Revoke(device.Id); }; root.Controls.Add(revoke);
-        root.Controls.Add(new Label { Text = "手机与电脑在同一局域网即可连接；Tailscale 用于外出访问。\n只监听私网，仍需扫码和电脑确认。关闭窗口后在托盘运行。", Width = 550, Height = 60 });
+        root.Controls.Add(new Label { Text = "同账号的个人设备可从手机选择这台电脑。关闭窗口后桥接在托盘运行。", Width = 550, Height = 60 });
         tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "Codex 远程控制", Visible = true };
         var menu = new ContextMenuStrip(); menu.Items.Add("显示配对窗口", null, (_, _) => ShowWindow()); menu.Items.Add("退出桥接", null, (_, _) => { exiting = true; Close(); }); tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => ShowWindow();
         Shown += (_, _) => { RefreshPair(); RefreshDevices(); }; FormClosing += (_, e) => { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };

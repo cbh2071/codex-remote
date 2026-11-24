@@ -27,6 +27,12 @@ import org.commonmark.node.*
 
 private val MdInk = Color(0xFF1D2A23)
 private val MdGreen = Color(0xFF205B44)
+internal val LocalFileClick = compositionLocalOf<((String) -> Unit)?> { null }
+internal val LocalMessageFileClick = compositionLocalOf<((String, String) -> Unit)?> { null }
+internal fun projectFileLink(value: String): Boolean {
+    if (value.isBlank() || value.startsWith("#") || value.startsWith("//") || value.startsWith("\\\\")) return false
+    return Regex("^/?[a-zA-Z]:[/\\\\]").containsMatchIn(value) || !Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:").containsMatchIn(value)
+}
 
 @Composable
 fun MarkdownText(text: String, modifier: Modifier = Modifier) {
@@ -65,12 +71,18 @@ private fun MarkdownBlock(node: Node, depth: Int = 0) {
 @Composable
 private fun MarkdownInline(node: Node, style: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 21.sp), modifier: Modifier = Modifier) {
     val uriHandler = LocalUriHandler.current
-    val annotated = remember(node) { buildAnnotatedString { inline(node) { url -> runCatching { uriHandler.openUri(url) }; Unit } } }
+    val local = LocalFileClick.current
+    val openFile by rememberUpdatedState(local)
+    val annotated = remember(node, local != null, uriHandler) {
+        buildAnnotatedString { inline(node, local != null) { url ->
+            if (safeWebLink(url)) runCatching { uriHandler.openUri(url) } else openFile?.invoke(url)
+        } }
+    }
     SelectionContainer { Text(annotated, modifier = modifier, style = style, color = MdInk) }
 }
 
-private fun AnnotatedString.Builder.inline(node: Node, open: (String) -> Unit) {
-    fun nested() { node.children().forEach { inline(it, open) } }
+private fun AnnotatedString.Builder.inline(node: Node, files: Boolean, open: (String) -> Unit) {
+    fun nested() { node.children().forEach { inline(it, files, open) } }
     when (node) {
         is org.commonmark.node.Text -> append(node.literal)
         is Code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0xFFEAF0DF), color = MdGreen)) { append(node.literal) }
@@ -79,7 +91,7 @@ private fun AnnotatedString.Builder.inline(node: Node, open: (String) -> Unit) {
         is Strikethrough -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { nested() }
         is SoftLineBreak -> append('\n')
         is HardLineBreak -> append('\n')
-        is Link -> if (safeWebLink(node.destination)) withLink(LinkAnnotation.Clickable(node.destination, TextLinkStyles(style = SpanStyle(color = MdGreen, textDecoration = TextDecoration.Underline))) { open(node.destination) }) { nested() } else nested()
+        is Link -> if (safeWebLink(node.destination) || (files && projectFileLink(node.destination))) withLink(LinkAnnotation.Clickable(node.destination, TextLinkStyles(style = SpanStyle(color = MdGreen, textDecoration = TextDecoration.Underline))) { open(node.destination) }) { nested() } else nested()
         is Image -> { append("[图片："); nested(); append("]") }
         is HtmlInline -> append(node.literal)
         else -> nested()

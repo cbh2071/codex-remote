@@ -81,7 +81,7 @@ fun connectionMessage(error: Throwable, url: String? = null): String {
     return error.message ?: "连接失败，请检查当前网络和电脑桥接。"
 }
 
-class HostApi(val host: Host) {
+class HostApi(val host: Host, sockets: javax.net.SocketFactory? = null) {
     companion object {
         private val closingExecutor = java.util.concurrent.Executors.newCachedThreadPool { task -> Thread(task, "codex-connection-close").apply { isDaemon = true } }
     }
@@ -102,6 +102,7 @@ class HostApi(val host: Host) {
         }
         val tls = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), SecureRandom()) }
         client = OkHttpClient.Builder().sslSocketFactory(tls.socketFactory, trust)
+            .apply { if (sockets != null) socketFactory(sockets) }
             .proxy(java.net.Proxy.NO_PROXY)
             // The QR pins the complete leaf certificate; hostname DNS is not a trust source.
             .hostnameVerifier { hostname, _ -> hostname == URI(host.url).host }

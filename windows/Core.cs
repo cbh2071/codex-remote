@@ -32,7 +32,7 @@ sealed class Vault
         if (!File.Exists(path)) return default;
         return JsonSerializer.Deserialize<T>(ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser), J.Options);
     }
-    public void Write(string name, object value)
+    public void Write(string name, object? value)
     {
         var path = Path.Combine(Root, name + ".dpapi");
         var bytes = ProtectedData.Protect(JsonSerializer.SerializeToUtf8Bytes(value, J.Options), null, DataProtectionScope.CurrentUser);
@@ -66,7 +66,7 @@ sealed class Identity
     public string Fingerprint { get { using var cert = GetCertificate(); return Convert.ToHexString(SHA256.HashData(cert.RawData)).ToLowerInvariant(); } }
 }
 
-sealed record Device(string Id, string Name, string Hash, DateTimeOffset Created);
+sealed record Device(string Id, string Name, string Hash, DateTimeOffset Created, string? TailnetNode = null, bool Revoked = false);
 sealed class Pairing(Vault vault, Identity identity)
 {
     readonly object sync = new();
@@ -76,10 +76,31 @@ sealed class Pairing(Vault vault, Identity identity)
     bool inUse;
     public Func<string, Task<bool>> Confirm { get; set; } = _ => Task.FromResult(false);
     public event Action? Changed;
-    public Device[] Devices { get { lock (sync) return devices.ToArray(); } }
+    public Device[] Devices { get { lock (sync) return devices.Where(d => !d.Revoked).ToArray(); } }
+    public TailnetOwner? Owner { get { lock (sync) return vault.Read<TailnetOwner>("tailnet-owner"); } }
+    public void SetOwner(TailnetOwner? owner) { lock (sync) vault.Write("tailnet-owner", owner); }
+    public object Enroll(TailnetOwner expected, VerifiedPeer peer)
+    {
+        lock (sync)
+        {
+            if (Owner != expected) throw new ApiError(403, "电脑已关闭免扫码连接");
+            var node = expected.Node + "/" + expected.User + "/" + peer.Node;
+            var device = devices.FirstOrDefault(d => d.TailnetNode == node);
+            if (device?.Revoked == true) throw new ApiError(403, "此节点的免扫码权限已被电脑撤销");
+            var key = vault.Read<string>("tailnet-key");
+            if (key == null) { key = J.Secret(); vault.Write("tailnet-key", key); }
+            var id = device?.Id ?? Guid.NewGuid().ToString();
+            var token = Convert.ToHexString(HMACSHA256.HashData(Convert.FromHexString(key), Encoding.UTF8.GetBytes(node + "/" + id))).ToLowerInvariant();
+            if (device == null) {
+                var updated = devices.Append(new Device(id, peer.Name, J.Hash(token), DateTimeOffset.UtcNow, node)).ToList();
+                vault.Write("devices", updated); devices = updated; Changed?.Invoke();
+            }
+            return new { hostId = identity.HostId, name = identity.Name, token, deviceId = id };
+        }
+    }
     public string CreateQr(string endpoint)
     {
-        lock (sync) { secret = J.Secret(); expires = DateTimeOffset.UtcNow.AddMinutes(5); inUse = false; return JsonSerializer.Serialize(new { v = 1, hostId = identity.HostId, name = identity.Name, url = endpoint, fingerprint = identity.Fingerprint, secret, expiresAt = expires }, J.Options); }
+        lock (sync) { secret = J.Secret(); expires = DateTimeOffset.UtcNow.AddMinutes(5); inUse = false; return JsonSerializer.Serialize(new { v = 1, hostId = identity.HostId, name = identity.Name, url = endpoint, fingerprint = identity.Fingerprint, secret, expiresAt = expires.UtcDateTime }, J.Options); }
     }
     public async Task<object> Pair(JsonNode body)
     {
@@ -101,8 +122,11 @@ sealed class Pairing(Vault vault, Identity identity)
             return new { hostId = identity.HostId, name = identity.Name, token, deviceId = device.Id };
         }
     }
-    public Device? Authenticate(string token) { lock (sync) return token.Length == 64 ? devices.FirstOrDefault(d => J.Equal(d.Hash, J.Hash(token))) : null; }
-    public void Revoke(string id) { lock (sync) { devices.RemoveAll(d => d.Id == id); vault.Write("devices", devices); } Changed?.Invoke(); }
+    public Device? Authenticate(string token) { lock (sync) return token.Length == 64 ? devices.FirstOrDefault(d => !d.Revoked && J.Equal(d.Hash, J.Hash(token))) : null; }
+    public void Revoke(string id) { lock (sync) {
+        var updated = devices.Where(d => d.Id != id || d.TailnetNode != null).Select(d => d.Id == id ? d with { Revoked = true, Hash = "" } : d).ToList();
+        vault.Write("devices", updated); devices = updated;
+    } Changed?.Invoke(); }
 }
 
 sealed record OpRecord(string Fingerprint, string Status, JsonNode? Result);

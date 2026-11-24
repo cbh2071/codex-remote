@@ -12,6 +12,9 @@ This project uses the following components. Their respective upstream licenses a
 - CommonMark Java 0.24.0, GFM tables and strikethrough extensions: Robin Stocker and contributors, BSD 2-Clause license. https://github.com/commonmark/commonmark-java
 - JUnit and AndroidX Test are used for tests only, under their upstream EPL / Apache licenses.
 
-Codex must be installed separately by the user. Tailscale is optional for local-network use and must be installed separately when used for remote access. No Codex desktop code, model credentials, Tailscale credentials, or upstream application bundles are included in this source archive.
+- JNA 5.17.0, Apache License 2.0. https://github.com/java-native-access/jna
+- The optional in-app Tailscale node uses the Android native libraries from leondgarse/tailscale_mobile v1.0.4, based on Tailscale tsnet and libtailscale (BSD-3-Clause). https://github.com/leondgarse/tailscale_mobile/releases/tag/v1.0.4
+
+The Windows host requires a separate Codex installation and its own Tailscale connection for tailnet access.
 
 License texts and runtime notices are included in `licenses/`. QRCoder's license is from the exact 1.6.0 NuGet repository commit; .NET notices are from the redistributed runtime packages. Apache-2.0.txt applies to the Apache-licensed Android components listed above.

@@ -2,8 +2,8 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "cn.codexremote.app"
     compileSdk = 35
-    defaultConfig { applicationId = "cn.codexremote.app"; minSdk = 29; targetSdk = 35; versionCode = 7; versionName = "0.1.6"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
-    testBuildType = "release"
+    defaultConfig { applicationId = "cn.codexremote.app"; minSdk = 29; targetSdk = 35; versionCode = 11; versionName = "0.1.10"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    testBuildType = providers.gradleProperty("androidTestBuildType").orElse("release").get()
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
@@ -15,9 +15,17 @@ android {
             keyPassword = System.getenv("CODEX_SIGNING_PASSWORD")
         }
     }
-    buildTypes { release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("release") } }
+    defaultConfig {
+        manifestPlaceholders["appLabel"] = "codex随行"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+    buildTypes {
+        debug { applicationIdSuffix = ".preview" }
+        release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("release") }
+    }
 }
 dependencies {
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation(platform("androidx.compose:compose-bom:2025.04.01"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.material3:material3")

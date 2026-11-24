@@ -182,6 +182,10 @@ static class StateView
             if (turn["error"] != null) all.Add(J.Node(new { id = turn.S("turnId") + "-error", turnId = turn.S("turnId"), kind = "error", text = turn["error"]!.ToJsonString() }));
         }
         // Preserve one legacy reasoning row for old clients; new clients use the rolling status field.
+        var editTurns = turns.Where(t => t["params"] is JsonObject).ToLookup(t => t.S("turnId"));
+        foreach (var msg in all.TakeLast(600).Where(m => m.S("kind") == "user"))
+            if (editTurns[msg.S("turnId")].FirstOrDefault() is JsonNode original)
+                msg["editTarget"] = ThreadSettings.EditTarget(state, original, turns.LastOrDefault());
         if (latestReasoning != null) all.Insert(reasoningPosition, latestReasoning.Copy());
         return J.Node(new { threadId = state.S("id"), instanceId = instance, title = state.S("title"), activeTurnId = ActiveTurn(state), latestTurnId = turns.LastOrDefault().S("turnId"), latestReasoning, editTarget = ThreadSettings.EditTarget(state), requests = state.Array("requests"), messages = all.TakeLast(600), hasOlder = all.Count > 600, status = state.Array("requests").Count > 0 ? "needsInput" : ActiveTurn(state).Length > 0 ? "active" : turns.LastOrDefault().S("status", "idle"), model = ThreadSettings.Model(state), effort = state.S("latestReasoningEffort") });
     }
@@ -232,38 +236,58 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
     JsonArray catalog = [];
     string caller = "";
     string backend = "";
+    string toolEndpoint = "";
     Dictionary<string, JsonNode> toolSchemas = [];
     public string Version { get; private set; } = "";
     public string ArchiveHash { get; private set; } = "";
     public bool KnownBuild { get; private set; }
-    public string CompatibilityNote => !Compatible ? "原生协议尚未就绪；不按桌面版本号锁定" : KnownBuild ? "已知构建，原生协议自检通过" : "协议自检通过；此桌面构建尚未完整回归，不会仅因版本号不同锁定";
+    public bool LiveRouter => ipc?.Connected == true;
+    public string Mode => LiveRouter ? "runtime-protocol" : Connected ? "desktop-tools" : "disconnected";
+    public string CompatibilityNote => !Compatible ? "正在连接桌面" : !LiveRouter ? "已连接桌面工具，可读取项目和会话；实时控制管道未就绪" : KnownBuild ? "已知构建，原生协议自检通过" : "协议自检通过；此桌面构建尚未完整回归";
     public bool Compatible { get; private set; }
-    public bool Connected => ipc?.Connected == true;
+    public bool Connected => Compatible && toolEndpoint.Length > 0;
     public string LastError { get; private set; } = "尚未连接 Codex";
     public async Task Ensure()
     {
         if (Connected) return;
+        await ConnectDesktop();
+    }
+    async Task ConnectDesktop()
+    {
         await connectionLock.WaitAsync();
         try
         {
-            if (Connected) return;
-            Compatible = false;
-            await ReadBuildInfo();
             var originalBackend = BackendIdentity();
+            var endpoint = originalBackend.Length == 0 ? "" : FindToolPipe();
+            bool hasRouter = Directory.GetFiles(@"\\.\pipe\", "codex-ipc").Length > 0;
+            if (Connected && originalBackend == backend && endpoint == toolEndpoint &&
+                (ipc == null ? !hasRouter : LiveRouter && hasRouter)) return;
+            bool wasConnected = Connected;
+            Compatible = false;
+            if (ipc != null) { ipc.Received -= OnMessage; await ipc.DisposeAsync(); ipc = null; }
+            lock (sync) { states.Clear(); catalog = []; }
+            owners.Clear(); dirty.Clear(); caller = ""; toolEndpoint = "";
+            if (wasConnected) events.Reset();
             if (originalBackend.Length == 0) throw new ApiError(503, "请只运行一个 Codex 桌面后端；不会连接替代后端");
-            var peer = new PipePeer("codex-ipc");
-            peer.Received += OnMessage;
-            peer.Closed += () => { Compatible = false; lock (sync) states.Clear(); owners.Clear(); events.Reset(); };
+            if (endpoint.Length == 0) throw new ApiError(503, "未找到唯一的 Codex 桌面工具服务，请只运行一个桌面实例");
+            if (backend != originalBackend) await ReadBuildInfo();
+            var schemas = await ReadToolSchemas(endpoint);
+            if (!schemas.TryGetValue("list_threads", out var list) || !Compatibility.Matches(list, J.Node(new { limit = 50 })))
+                throw new ApiError(503, "桌面工具未提供兼容的会话目录");
+            PipePeer? peer = hasRouter ? new PipePeer("codex-ipc") : null;
             try
             {
-                await peer.Connect(true);
-                var schemas = await ReadToolSchemas();
-                if (!schemas.TryGetValue("list_threads", out var list) || !Compatibility.HandshakeReady(peer.ClientId, list)) throw new ApiError(503, "原桌面暂未提供兼容的握手或任务目录协议");
-                if (BackendIdentity() != originalBackend) throw new ApiError(503, "桌面后端正在切换，请稍后连接");
-                backend = originalBackend; toolSchemas = schemas; ipc = peer; Compatible = true; LastError = "";
-                vault?.Write("compatibility", new { version = Version, archiveHash = ArchiveHash, knownBuild = KnownBuild, checkedAt = DateTimeOffset.UtcNow, mode = "runtime-protocol", routerHandshake = true, nativeToolSchemas = true });
+                if (peer != null)
+                {
+                    peer.Received += OnMessage;
+                    await peer.Connect(true);
+                    if (!Compatibility.HandshakeReady(peer.ClientId, list)) throw new ApiError(503, "桌面实时管道握手失败");
+                }
+                if (BackendIdentity() != originalBackend || FindToolPipe() != endpoint) throw new ApiError(503, "桌面后端正在切换，请稍后连接");
+                backend = originalBackend; toolSchemas = schemas; ipc = peer; toolEndpoint = endpoint; Compatible = true; LastError = "";
+                vault?.Write("compatibility", new { version = Version, archiveHash = ArchiveHash, knownBuild = KnownBuild, checkedAt = DateTimeOffset.UtcNow, mode = Mode, routerHandshake = LiveRouter, nativeToolSchemas = true });
             }
-            catch { Compatible = false; await peer.DisposeAsync(); throw; }
+            catch { Compatible = false; if (peer != null) await peer.DisposeAsync(); throw; }
         }
         finally { connectionLock.Release(); }
     }
@@ -303,33 +327,34 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
         }
         dirty[id] = 0;
     }
-    static string CallerId()
+    internal static string CallerId()
     {
-        var index = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "session_index.jsonl");
+        var index = Path.Combine(ThreadSettings.CodexHome(), "session_index.jsonl");
         if (!File.Exists(index)) throw new ApiError(503, "请先在 Codex 中打开一个现有会话");
         foreach (var line in File.ReadLines(index).Reverse())
             try { var id = JsonNode.Parse(line).S("id"); if (Guid.TryParse(id, out _)) return id; } catch { }
         throw new ApiError(503, "找不到现有 Codex 会话");
     }
-    static string ToolPipe()
+    static string FindToolPipe()
     {
         var pipes = Directory.GetFiles(@"\\.\pipe\", "codex-app-tools-*");
-        if (pipes.Length != 1) throw new ApiError(503, "未找到唯一的 Codex 桌面工具服务，请只运行一个桌面实例");
-        return Path.GetFileName(pipes[0]);
+        return pipes.Length == 1 ? Path.GetFileName(pipes[0]) : "";
     }
-    static async Task<Dictionary<string, JsonNode>> ReadToolSchemas()
+    static async Task<Dictionary<string, JsonNode>> ReadToolSchemas(string endpoint)
     {
-        await using var peer = new PipePeer(ToolPipe()); await peer.Connect(false);
+        await using var peer = new PipePeer(endpoint); await peer.Connect(false);
         var response = await peer.Request("tools/list", new { threadStartKind = "all" }, rpc: true);
         return response["result"].Array("tools").OfType<JsonObject>().Where(t => t.S("namespace") == "codex_app" && t["inputSchema"] is JsonObject).GroupBy(t => t.S("name")).ToDictionary(g => g.Key, g => g.First()["inputSchema"]!.Copy());
     }
     async Task<JsonNode> AppTool(string tool, object arguments, string? target = null)
     {
         // Only these read/control tools are reachable; raw desktop RPC is never exposed by HTTP.
-        if (tool is not ("list_threads" or "read_thread" or "navigate_to_codex_page" or "list_projects" or "create_thread" or "fork_thread")) throw new ApiError(400, "工具不允许");
+        if (tool is not ("list_threads" or "read_thread" or "navigate_to_codex_page" or "list_projects" or "create_thread" or "fork_thread" or "send_message_to_thread")) throw new ApiError(400, "工具不允许");
         if (!toolSchemas.TryGetValue(tool, out var schema) || !Compatibility.Matches(schema, J.Node(arguments))) throw new ApiError(409, "这项功能的原生参数协议暂不兼容，未提交；其他功能仍可使用", true);
         if (caller.Length == 0) caller = CallerId();
-        await using var peer = new PipePeer(ToolPipe()); await peer.Connect(false);
+        var endpoint = toolEndpoint;
+        if (endpoint.Length == 0 || FindToolPipe() != endpoint) throw new ApiError(409, "桌面连接已变化，请刷新", true);
+        await using var peer = new PipePeer(endpoint); await peer.Connect(false);
         var response = await peer.Request("tools/call", new { arguments, callerSource = "codex", callId = Guid.NewGuid().ToString(), hostId = "local", @namespace = "codex_app", threadId = target ?? caller, tool, turnId = "remote-" + Guid.NewGuid() }, rpc: true);
         var result = response["result"]!;
         if (result["success"]?.GetValue<bool>() != true) throw new ApiError(409, "桌面工具拒绝了请求：" + string.Join("\n", result.Array("contentItems").Select(n => n.S("text"))));
@@ -352,6 +377,7 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
     async Task<string> Follow(string id)
     {
         await Ensure();
+        if (!LiveRouter) throw new ApiError(409, "此操作需要桌面实时控制管道");
         var found = await ipc!.Request("thread-owner-discovery", new { hostId = "local", conversationId = id });
         var owner = found.S("handledByClientId");
         if (owner.Length == 0) throw new ApiError(409, "请先在电脑 Codex 打开此会话，再在手机刷新");
@@ -369,24 +395,125 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
         lock (sync) if (states.TryGetValue(id, out var state)) return state.State.Copy();
         throw new ApiError(409, "尚未获得实时状态，请在电脑打开会话后刷新");
     }
-    public async Task<JsonNode> History(string id)
+    public async Task<JsonNode> HistoryPage(string? cursor)
     {
-        try { return StateView.Normalize(await Snapshot(id), events.InstanceId); }
-        catch (ApiError)
+        await Ensure();
+        var args = J.Node(new { mode = "history", hostId = "local", source = "codex", limit = 50 });
+        if (!string.IsNullOrEmpty(cursor)) args["cursor"] = cursor;
+        var page = await AppTool("list_threads", args);
+        return new JsonObject {
+            ["threads"] = new JsonArray(page.Array("threads").OfType<JsonNode>()
+                .Where(t => t.S("hostId") == "local" && t.S("kind") == "codex").Select(t => t.Copy()).ToArray()),
+            ["nextCursor"] = page["nextCursor"]?.Copy()
+        };
+    }
+    internal static JsonNode StoredView(string id, JsonNode history, string instance)
+    {
+        var turns = history.Array("turns").OfType<JsonNode>().Select(t => t.Copy()).ToList();
+        if (history["page"].S("order", "newest_first") == "newest_first") turns.Reverse();
+        foreach (var turn in turns) turn["turnId"] = turn.S("id", turn.S("turnId"));
+        var state = new JsonObject { ["id"] = id, ["title"] = history["thread"].S("title", "历史会话"), ["turns"] = new JsonArray(turns.ToArray()) };
+        var view = StateView.Normalize(state, instance);
+        view["live"] = false;
+        view["hasOlder"] = view["hasOlder"]!.GetValue<bool>() || history["page"]?["hasMore"]?.GetValue<bool>() == true;
+        return view;
+    }
+    internal static JsonNode CurrentView(JsonNode liveState, JsonNode stored, string instance)
+    {
+        var live = StateView.Normalize(liveState, instance);
+        var tail = stored.S("latestTurnId");
+        if (tail.Length == 0) return live;
+        if (live.S("latestTurnId") != tail)
+            return StateView.Turns(liveState).Any(t => t.S("turnId") == tail) ? live : stored;
+        if (stored.S("status") is "completed" or "interrupted" or "failed" && live.S("status") == "active") return stored;
+        var reply = stored.Array("messages").LastOrDefault(m => m.S("turnId") == tail && m.S("kind") == "agentMessage");
+        if (reply != null && !live.Array("messages").Any(m => m.S("turnId") == tail && m.S("kind") == "agentMessage" &&
+            (m.S("text") == reply.S("text") || m.S("text").StartsWith(reply.S("text"), StringComparison.Ordinal)))) return stored;
+        return live;
+    }
+    public async Task<JsonNode> History(string id, bool fresh = false)
+    {
+        if (!Guid.TryParse(id, out _)) throw new ApiError(400, "会话标识无效");
+        await Ensure();
+        JsonNode? state = null;
+        try { state = await Snapshot(id, fresh); } catch (ApiError) { }
+        JsonNode history;
+        try { history = await ReadRecentTurns(id); }
+        catch (ApiError) when (state != null && !fresh) { return StateView.Normalize(state, events.InstanceId); }
+        var stored = StoredView(id, history, events.InstanceId);
+        if (history["thread"].S("id") == id && history["thread"].S("hostId") == "local")
         {
-            var history = await AppTool("read_thread", new { threadId = id, hostId = "local", turnLimit = 10, includeOutputs = true, maxOutputCharsPerItem = 20000 }, id);
-            var historical = new JsonObject { ["id"] = id, ["title"] = history["thread"].S("title", "历史会话"), ["turns"] = new JsonArray(history.Array("turns").Reverse().Select(t => t?.Copy()).ToArray()) };
-            var view = StateView.Normalize(historical, events.InstanceId);
-            view["live"] = false; view["hasOlder"] = history["page"]?["hasMore"]?.Copy() ?? false;
-            view["warning"] = "历史已读取。点击下方按钮在原电脑打开此会话，即可实时控制；不会新建任务。";
-            return view;
+            stored["desktopTools"] = true;
+            stored["canSendText"] = CanReceiveText(history["thread"]?["status"]) && toolSchemas.ContainsKey("send_message_to_thread");
         }
+        return state == null ? stored : CurrentView(state, stored, events.InstanceId);
+    }
+    internal static bool CanReceiveText(JsonNode? status)
+    {
+        var type = status is JsonObject ? status.S("type") : status?.ToString();
+        return type is "idle" or "notLoaded" or "completed" or "interrupted" or "failed" or "active"
+            && (status is not JsonObject || !status.Array("activeFlags").Any(f => f?.ToString() is "waitingOnApproval" or "waitingOnUserInput"));
+    }
+    async Task<JsonNode> ReadRecentTurns(string id)
+    {
+        foreach (var (turns, outputs, chars) in new[] { (10, true, 20000), (5, true, 2000), (3, false, 1200), (1, false, 600) })
+        {
+            try { return await AppTool("read_thread", new { threadId = id, hostId = "local", turnLimit = turns, includeOutputs = outputs, maxOutputCharsPerItem = chars }, id); }
+            catch (ApiError e) when (turns > 1 && e.Message.Contains("size limit", StringComparison.OrdinalIgnoreCase)) { }
+        }
+        throw new ApiError(413, "单轮会话超过桌面的读取上限");
+    }
+    public async Task<JsonNode> Preview(string id, JsonNode body)
+    {
+        var thread = (await Catalog()).FirstOrDefault(t => t.S("id") == id);
+        thread ??= (await AppTool("read_thread", new { threadId = id, hostId = "local", turnLimit = 1 }, id))["thread"];
+        if (thread == null || thread.S("id") != id) throw new ApiError(404, "未找到此会话");
+        var view = await History(id);
+        var message = view.Array("messages").FirstOrDefault(m => m.S("kind") == "agentMessage" && m.S("id") == body.S("messageId"));
+        if (message == null) throw new ApiError(404, "请刷新会话后重新打开链接");
+        return await ProjectPreview.Read(thread.S("cwd"), message.S("text"), body.S("link"));
+    }
+    async Task<JsonNode> LocalThread(string id)
+    {
+        if (!Guid.TryParse(id, out _)) throw new ApiError(400, "会话标识无效");
+        await Ensure();
+        var info = (await AppTool("read_thread", new { threadId = id, hostId = "local", includeTurns = false }, id))["thread"];
+        if (info == null || info.S("id") != id || info.S("hostId") != "local") throw new ApiError(404, "未找到本机会话");
+        return info;
+    }
+    public async Task<JsonNode> Sidebar(string id, JsonNode body)
+    {
+        var thread = await LocalThread(id);
+        if (body.S("action") == "children") return J.Node(new { entries = ThreadIndex.Children(id) });
+        if (body.S("action") is not ("list" or "open")) throw new ApiError(400, "未知的侧栏操作");
+        return await ProjectPreview.Browse(thread.S("cwd"), body.S("path"), body.S("action") == "list");
     }
     public async Task<JsonNode> Control(JsonNode body, string deviceId = "")
     {
         if (!Compatible) throw new ApiError(409, "原桌面协议自检尚未就绪，请稍后刷新；不会使用其他后端代替");
         if (backend.Length == 0 || BackendIdentity() != backend || body.S("instanceId") != events.InstanceId) throw new ApiError(409, "Codex 后端已改变，请重新读取状态");
         var id = body.S("threadId"); var type = body.S("type");
+        if (body["latestTurnId"] != null && type is "send" or "steer")
+        {
+            var prompt = body.S("text").Trim();
+            if (prompt.Length is < 1 or > 32000 || body.Array("imageIds").Count > 0) throw new ApiError(400, "当前桌面连接仅支持发送 1 至 32000 字的纯文本");
+            var view = await History(id, true);
+            if (view["canSendText"]?.GetValue<bool>() != true || view.S("activeTurnId") != body.S("turnId") || view.S("latestTurnId") != body.S("latestTurnId"))
+                throw new ApiError(409, "会话状态已变化，请刷新后重新发送");
+            var args = J.Node(new { hostId = "local", threadId = id, prompt });
+            if (body["model"] != null)
+            {
+                var choices = await ToolModels(id);
+                var choice = choices.Array("models").FirstOrDefault(c => c.S("id") == body.S("model"));
+                if (body.S("expectedProvider") != choices.S("provider") || choice == null || !choice.Array("efforts").Any(e => e?.ToString() == body.S("effort")))
+                    throw new ApiError(409, "模型目录已变化，请重新选择");
+                args["model"] = body.S("model");
+                if (body.S("effort").Length > 0) args["thinking"] = body.S("effort");
+            }
+            if (body.S("instanceId") != events.InstanceId || backend != BackendIdentity()) throw new ApiError(409, "桌面实例已变化，请刷新会话");
+            try { return await AppTool("send_message_to_thread", args, id); }
+            catch (ApiError e) when (!e.BeforeDispatch) { throw new IOException("Message outcome requires reconciliation", e); }
+        }
         if (type == "fork")
         {
             var context = await ForkContext(id);
@@ -413,6 +540,7 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
         }
         if (type == "activate")
         {
+            if (!LiveRouter) throw new ApiError(409, "当前桌面没有实时控制管道；可在随行查看历史，更新手机端后可发送文字");
             lock (sync) if (!catalog.OfType<JsonNode>().Any(t => t.S("id") == id)) throw new ApiError(404, "此会话不在本机现有桌面会话列表中");
             await AppTool("navigate_to_codex_page", new { threadId = id }, id);
             for (int attempt = 0; attempt < 8; attempt++) { try { await Snapshot(id, true); return J.Node(new { opened = true }); } catch (ApiError) { await Task.Delay(500); } }
@@ -507,8 +635,19 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
         }
         catch (ApiError e) when (!e.BeforeDispatch) { throw new IOException("Desktop dispatch outcome requires reconciliation", e); }
     }
-    public async Task<JsonNode> Models(string id)
+    async Task<JsonNode> ToolModels(string id)
     {
+        var thread = await LocalThread(id);
+        var settings = ThreadIndex.Settings(id, thread.S("cwd"));
+        var (configured, matches) = ThreadSettings.ReadCatalog(settings);
+        var choices = ThreadSettings.Catalog(settings, configured, matches);
+        return J.Node(new { instanceId = events.InstanceId, threadId = id, model = ThreadSettings.Model(settings), effort = settings.S("latestReasoningEffort"),
+            provider = settings.S("modelProvider"), models = choices, nextMessage = true, warning = "选择随下一条手机消息发送。" });
+    }
+    public async Task<JsonNode> Models(string id, bool nextMessage = false)
+    {
+        await Ensure();
+        if (nextMessage || !LiveRouter) return await ToolModels(id);
         await Snapshot(id, true);
         await ipc!.Request("thread-follower-read-model-settings", new { conversationId = id }, 1, owners[id]);
         var state = await Snapshot(id, true);
@@ -553,13 +692,11 @@ sealed class Desktop(EventHub events, Vault? vault = null) : IAsyncDisposable
         {
             try
             {
-                var next = BackendIdentity();
-                if (next != backend) { backend = next; lock (sync) states.Clear(); owners.Clear(); events.Reset(); if (ipc != null) { await ipc.DisposeAsync(); ipc = null; } }
-                await Ensure();
+                await ConnectDesktop();
                 if (tick++ % 5 == 0)
                 {
-                    var threads = await Catalog(); events.Publish("catalog", new { threads, desktopConnected = Connected, compatible = Compatible, error = LastError });
-                    foreach (var thread in threads.OfType<JsonNode>().Where(t => t.S("status") is "active" or "idle" or "needsInput")) if (!owners.ContainsKey(thread.S("id"))) try { await Follow(thread.S("id")); } catch { }
+                    var threads = await Catalog(); events.Publish("catalog", new { threads, desktopConnected = Connected, compatible = Compatible, desktopTools = !LiveRouter, error = LastError });
+                    if (LiveRouter) foreach (var thread in threads.OfType<JsonNode>().Where(t => t.S("status") is "active" or "idle" or "needsInput")) if (!owners.ContainsKey(thread.S("id"))) try { await Follow(thread.S("id")); } catch { }
                 }
                 foreach (var id in dirty.Keys) if (dirty.TryRemove(id, out _))
                 {

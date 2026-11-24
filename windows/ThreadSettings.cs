@@ -7,9 +7,10 @@ namespace CodexRemote;
 static class ThreadSettings
 {
     public static string Model(JsonNode state) => (state["latestCollaborationMode"]?["settings"]).S("model", state.S("latestModel"));
-    public static JsonNode EditTarget(JsonNode state)
+    public static JsonNode EditTarget(JsonNode state, JsonNode? selected = null, JsonNode? tail = null)
     {
-        var turn = StateView.Turns(state).LastOrDefault();
+        tail ??= StateView.Turns(state).LastOrDefault();
+        var turn = selected ?? tail;
         var input = turn?["params"].Array("input") ?? [];
         var text = input.Count == 1 && input[0].S("type") == "text" ? input[0].S("text") : "";
         string reason = "";
@@ -18,7 +19,7 @@ static class ThreadSettings
         else if (text.Contains("## My request:") || text.StartsWith("<page-comment-context>") || text.StartsWith("# Files ")) reason = "这条消息带有电脑端上下文，请在电脑编辑";
         else if (turn["params"]?["useAppServerPermissionDefault"]?.GetValue<bool>() != true) reason = "此轮使用自定义或未确认的权限，请在电脑编辑，以保持原权限设置";
         else if (StateView.ActiveTurn(state).Length > 0 || state.Array("requests").Count > 0) reason = "请等当前任务结束后编辑；不会自动中断任务";
-        return J.Node(new { turnId = turn.S("turnId"), text = reason.Length == 0 || reason.StartsWith("请等") ? text : "", fingerprint = turn == null ? "" : J.Hash(turn.ToJsonString()), allowed = reason.Length == 0, reason });
+        return J.Node(new { turnId = turn.S("turnId"), earlier = turn != tail, text = reason.Length == 0 || reason.StartsWith("请等") ? text : "", fingerprint = turn == null ? "" : J.Hash(turn.ToJsonString() + tail.S("turnId")), allowed = reason.Length == 0, reason });
     }
     static bool HasAdditionalUserMessages(JsonNode turn)
     {
@@ -32,13 +33,14 @@ static class ThreadSettings
     }
     public static JsonObject EditArguments(JsonNode state, JsonNode body)
     {
-        var target = EditTarget(state);
+        var turn = StateView.Turns(state).FirstOrDefault(t => t.S("turnId") == body.S("editTurnId")) ?? throw new ApiError(409, "目标消息已变化");
+        var target = EditTarget(state, turn);
         if (target["allowed"]?.GetValue<bool>() != true) throw new ApiError(409, target.S("reason"));
         if (body.S("editTurnId") != target.S("turnId") || body.S("editFingerprint") != target.S("fingerprint")) throw new ApiError(409, "最新消息已经变化，请重新打开编辑");
         var text = body.S("text").Trim();
         if (text.Length is < 1 or > 32000 || text == target.S("text")) throw new ApiError(400, "请输入修改后的消息（1 至 32000 字符）");
         // The desktop performs its own rollback/re-submit. Never reproduce it with raw RPC.
-        return J.Node(new { conversationId = state.S("id"), turnId = target.S("turnId"), message = text, allowEarlierMessages = false, shouldSendPermissionOverrides = false }).AsObject();
+        return J.Node(new { conversationId = state.S("id"), turnId = target.S("turnId"), message = text, allowEarlierMessages = target["earlier"]!.GetValue<bool>(), shouldSendPermissionOverrides = false }).AsObject();
     }
     public static JsonArray Catalog(JsonNode state, JsonNode? configured, bool providerMatches)
     {
@@ -62,11 +64,17 @@ static class ThreadSettings
         if (!choice.Array("efforts").Any(e => e?.ToString() == effort)) throw new ApiError(400, "该模型不支持所选思考强度");
         return J.Node(new { conversationId = state.S("id"), threadSettings = new { model = body.S("model"), effort }, condition = new { ifModelEquals = Model(state), ifEffortEquals = state["latestReasoningEffort"]?.Copy() } }).AsObject();
     }
+    internal static string CodexHome()
+    {
+        var home = Environment.GetEnvironmentVariable("CODEX_HOME");
+        return string.IsNullOrWhiteSpace(home)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")
+            : home;
+    }
     public static (JsonNode? Catalog, bool Matches) ReadCatalog(JsonNode state)
     {
         // Read only the configured catalog; never copy provider secrets or guess models from another PC.
-        var home = Environment.GetEnvironmentVariable("CODEX_HOME");
-        if (string.IsNullOrWhiteSpace(home)) home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        var home = CodexHome();
         var root = Path.Combine(home, "config.toml");
         if (!File.Exists(root) || new FileInfo(root).Length > 1024 * 1024) return (null, false);
         var table = Toml.ToModel(File.ReadAllText(root));
@@ -86,7 +94,10 @@ static class ThreadSettings
         }
         if (catalog == null || provider != state.S("modelProvider")) return (null, false);
         var path = Path.GetFullPath(catalog, home);
-        if (!File.Exists(path) || new FileInfo(path).Length > 4 * 1024 * 1024) return (null, false);
-        return (JsonNode.Parse(File.ReadAllText(path)), true);
+        if (!File.Exists(path)) return (null, false);
+        using var file = File.OpenRead(path);
+        // Gateway catalogs can include model instructions as well as picker metadata.
+        if (file.Length > 32L * 1024 * 1024) return (null, false);
+        return (JsonNode.Parse(file), true);
     }
 }

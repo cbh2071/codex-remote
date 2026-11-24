@@ -94,7 +94,7 @@ private fun LoadedImage(source: String, name: String, maxDimension: Int, load: s
 }
 
 @Composable
-private fun ImageViewer(source: String, name: String, load: suspend () -> ByteArray, close: () -> Unit) {
+internal fun ImageViewer(source: String, name: String, load: suspend () -> ByteArray, close: () -> Unit) {
     var zoom by remember(source) { mutableFloatStateOf(1f) }; var offset by remember(source) { mutableStateOf(Offset.Zero) }
     val transform = rememberTransformableState { factor, pan, _ -> zoom = (zoom * factor).coerceIn(1f, 6f); offset = if (zoom == 1f) Offset.Zero else offset + pan }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {

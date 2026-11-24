@@ -12,7 +12,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
-data class HostState(val host: Host, val online: Boolean = false, val instance: String = "", val compatible: Boolean = false, val error: String = "等待连接", val threads: List<JSONObject> = emptyList())
+data class HostState(val host: Host, val online: Boolean = false, val instance: String = "", val compatible: Boolean = false, val error: String = "等待连接", val threads: List<JSONObject> = emptyList(), val catalogLoaded: Boolean = false, val catalogError: String? = null)
 data class ThreadKey(val hostId: String, val threadId: String)
 data class ProjectCatalog(val hostId: String, val instanceId: String, val projects: List<JSONObject>)
 data class Notice(val hostId: String, val threadId: String, val title: String, val text: String)
@@ -23,6 +23,18 @@ fun shouldNotify(previous: String?, current: String, previousRequests: String, c
 class RemoteApplication : Application() { lateinit var repository: Repository; override fun onCreate() { super.onCreate(); repository = Repository(this) } }
 
 class Repository(private val context: Context) {
+    internal val tailnet = EmbeddedTailnet(context)
+    private fun hostApi(host: Host) = HostApi(host, if (tailnet.enabled && connectionKind(host.url) == "Tailscale") tailnet.socketFactory(host.url) else null)
+    internal suspend fun toggleTailnet(enabled: Boolean) = withContext(Dispatchers.IO) {
+        tailnet.setEnabled(enabled)
+        synchronized(this@Repository) {
+            for ((id, state) in states.value) if (connectionKind(state.host.url) == "Tailscale") {
+                jobs.remove(id)?.cancel()
+                apis.remove(id)?.close()
+            }
+            reconcile()
+        }
+    }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val store = SecureStore(context)
     val imageDrafts = ImageDrafts(context, store)
@@ -73,7 +85,7 @@ class Repository(private val context: Context) {
         val code = PairCode.parse(text)
         val previous = states.value[code.host.id]
         require(previous == null || previous.host.fingerprint == code.host.fingerprint) { "同一电脑的证书已改变。请先在手机移除旧电脑，再重新核对配对。" }
-        val api = HostApi(code.host)
+        val api = hostApi(code.host)
         try {
             val body = JSONObject().put("hostId", code.host.id).put("secret", code.secret).put("deviceName", android.os.Build.MODEL.take(70))
             val result = api.request("/api/v1/pair", body, false)
@@ -83,11 +95,41 @@ class Repository(private val context: Context) {
             host.name
         } finally { api.close() }
     }
+    internal suspend fun connectPeer(peer: TailnetPeer): String = withContext(Dispatchers.IO) {
+        fun verifyPeer() {
+            require(tailnetComputers(tailnet.status(peers = true)).any { it.id == peer.id && it.ip == peer.ip }) { "设备列表已变化，请刷新后重新选择" }
+        }
+        verifyPeer()
+        val sockets = tailnet.socketFactory(peer.url)
+        val candidate = discoverBridge(peer, sockets)
+        operationGate.run(candidate.id) {
+            verifyPeer()
+            val known = states.value[candidate.id]?.host
+            require(known == null || known.fingerprint == candidate.fingerprint) { "电脑证书已变化，请在电脑核对身份" }
+            val api = HostApi(known?.copy(url = peer.url) ?: candidate, sockets)
+            try {
+                val connected = if (known != null) {
+                    hostAtVerifiedAddress(known, peer.url, api.request("/api/v1/status")).copy(followed = true)
+                } else {
+                    val result = api.request("/api/v1/tailnet-pair", JSONObject().put("hostId", candidate.id), false)
+                    require(result.getString("hostId") == candidate.id && result.getString("token").matches(Regex("[0-9a-f]{64}")))
+                    candidate.copy(name = result.getString("name"), token = result.getString("token"), deviceId = result.getString("deviceId"))
+                }
+                synchronized(this@Repository) {
+                    require(states.value[candidate.id]?.host == known) { "电脑记录已变化，请重新选择" }
+                    jobs.remove(connected.id)?.cancel()
+                    apis.remove(connected.id)?.close()
+                    states.update { it + (connected.id to HostState(connected)) }; save(); reconcile()
+                }
+                connected.name
+            } finally { api.close() }
+        }
+    }
     suspend fun changeAddress(id: String, value: String) = withContext(Dispatchers.IO) {
         operationGate.run(id) {
             val original = states.value[id]?.host ?: error("电脑已移除")
             val candidate = original.copy(url = connectionAddress(value))
-            val api = HostApi(candidate)
+            val api = hostApi(candidate)
             try {
                 val verified = hostAtVerifiedAddress(original, candidate.url, api.request("/api/v1/status"))
                 synchronized(this@Repository) {
@@ -108,7 +150,7 @@ class Repository(private val context: Context) {
         var backoff = 1000L; var disconnectedAt = 0L; var warned = false; var sequence = 0L; var instance = ""
         while (currentCoroutineContext().isActive && states.value.containsKey(id)) {
             val host = states.value.getValue(id).host
-            val api = HostApi(host); apis.put(id, api)?.close()
+            val api = hostApi(host); apis.put(id, api)?.close()
             try {
                 val status = api.request("/api/v1/status")
                 if (!ownsApi(id, api)) throw CancellationException("连接地址已更改")
@@ -136,6 +178,7 @@ class Repository(private val context: Context) {
                                         "catalog" -> {
                                             val data = event.getJSONObject("data")
                                             updateCatalog(id, data.optJSONArray("threads") ?: JSONArray())
+                                            if (data.optBoolean("desktopTools")) for (key in selected.filter { it.hostId == id }) scope.launch { load(key, fresh = true) }
                                             if (data.has("desktopConnected")) states.update { all -> all[id]?.let { all + (id to it.copy(online = data.optBoolean("desktopConnected"), compatible = data.optBoolean("compatible"), error = data.optString("error"))) } ?: all }
                                         }
                                         "catalogInvalidated" -> scope.launch { refresh(id, api) }
@@ -168,7 +211,7 @@ class Repository(private val context: Context) {
             delay(backoff + kotlin.random.Random.nextLong(500)); backoff = (backoff * 2).coerceAtMost(30000)
         }
     }
-    private fun updateCatalog(id: String, threads: JSONArray) { states.update { all -> all[id]?.let { all + (id to it.copy(threads = threads.objects())) } ?: all } }
+    private fun updateCatalog(id: String, threads: JSONArray) { states.update { all -> all[id]?.let { all + (id to it.copy(threads = threads.objects(), catalogLoaded = true, catalogError = null)) } ?: all } }
     private suspend fun refresh(id: String, api: HostApi) {
         try {
             val status = api.request("/api/v1/status"); require(status.getString("hostId") == id)
@@ -176,15 +219,43 @@ class Repository(private val context: Context) {
             states.update { all -> all[id]?.let { all + (id to it.copy(online = status.optBoolean("desktopConnected"), compatible = status.optBoolean("compatible"), instance = status.getString("instanceId"), error = status.optString("error"))) } ?: all }
             val result = api.request("/api/v1/threads"); require(result.getString("hostId") == id); if (ownsApi(id, api)) updateCatalog(id, result.getJSONArray("threads"))
         }
-        catch (e: Exception) { if (e is CancellationException) throw e; message.value = "${states.value[id]?.host?.name}：${e.message}" }
+        catch (e: Exception) {
+            if (e is CancellationException) throw e
+            if (!ownsApi(id, api)) return
+            val detail = e.message ?: "读取失败"
+            states.update { all -> all[id]?.let { all + (id to it.copy(catalogError = detail)) } ?: all }
+        }
     }
-    fun refreshAll() { scope.launch { for ((id, api) in apis) refresh(id, api); for (key in selected) load(key) } }
-    fun watch(key: ThreadKey) { selected.add(key); scope.launch { load(key) } }
+    val catalogRefresh = MutableStateFlow(0)
+    fun refreshAll() {
+        catalogRefresh.update { it + 1 }
+        for (key in selected) scope.launch { load(key, fresh = true) }
+        for ((id, api) in apis) scope.launch { refresh(id, api) }
+    }
+    fun watch(key: ThreadKey) { selected.add(key); scope.launch { load(key, fresh = true) } }
     fun unwatch(key: ThreadKey) { selected.remove(key) }
-    private suspend fun load(key: ThreadKey) {
+    private val historyLocks = Array(32) { kotlinx.coroutines.sync.Mutex() }
+    private suspend fun load(key: ThreadKey, fresh: Boolean = false) {
+        val lock = historyLocks[Math.floorMod(key.hashCode(), historyLocks.size)]
+        if (!fresh && !lock.tryLock()) {
+            // A final desktop event may arrive while an earlier snapshot is being read.
+            if (!pendingReads.add(key)) return
+            try { lock.lock() } finally { pendingReads.remove(key) }
+        } else if (fresh) lock.lock()
+        try { readView(key, fresh) } finally { lock.unlock() }
+    }
+    private val pendingReads = ConcurrentHashMap.newKeySet<ThreadKey>()
+    private fun readView(key: ThreadKey, fresh: Boolean) {
         val api = apis[key.hostId] ?: return
-        try { val view = api.request("/api/v1/threads/${key.threadId}"); if (ownsApi(key.hostId, api) && view.optString("instanceId") == states.value[key.hostId]?.instance) histories.update { it + (key to view) } }
+        try { val view = api.request("/api/v1/threads/${key.threadId}" + if (fresh) "?fresh=true" else ""); if (ownsApi(key.hostId, api) && view.optString("instanceId") == states.value[key.hostId]?.instance) histories.update { it + (key to view) } }
         catch (e: Exception) { if (e is CancellationException) throw e; message.value = e.message ?: "读取失败" }
+    }
+    suspend fun historyPage(id: String, instance: String, cursor: String): JSONObject = withContext(Dispatchers.IO) {
+        val api = apis[id] ?: error("电脑未连接")
+        val suffix = if (cursor.isEmpty()) "" else "?cursor=" + java.net.URLEncoder.encode(cursor, "UTF-8")
+        val result = api.request("/api/v1/thread-index$suffix")
+        require(ownsApi(id, api) && result.optString("hostId") == id && result.optString("instanceId") == instance) { "电脑连接已变化，请刷新" }
+        result.getJSONObject("page")
     }
     suspend fun operate(key: ThreadKey, type: String, fields: JSONObject = JSONObject()): String = withContext(Dispatchers.IO) {
       operationGate.run(key.hostId) {
@@ -195,6 +266,7 @@ class Repository(private val context: Context) {
         if (type == "model") require(fields.optString("catalogInstanceId") == host.instance) { "模型目录所属实例已变化，请重新选择" }
         if (type == "edit") require(fields.optString("editInstanceId") == host.instance) { "编辑所属实例已变化，请重新打开编辑" }
         val body = JSONObject(fields.toString()).put("hostId", key.hostId).put("instanceId", host.instance).put("threadId", key.threadId).put("turnId", history.optString("activeTurnId")).put("operationId", UUID.randomUUID().toString()).put("type", type)
+        if (type in setOf("send", "steer") && history.optBoolean("desktopTools")) body.put("latestTurnId", history.optString("latestTurnId"))
         val api = apis[key.hostId] ?: error("电脑未连接")
         val pendingName = "pending-${key.hostId}"; val old = JSONObject(store.get(pendingName, "{}"))
         require(old.length() == 0) { "上次发送结果未确认。请先刷新并核对会话，不会重复发送" }
@@ -230,7 +302,8 @@ class Repository(private val context: Context) {
     suspend fun models(key: ThreadKey): JSONObject = withContext(Dispatchers.IO) {
         val host = states.value[key.hostId] ?: error("电脑已移除")
         require(host.online && host.compatible) { "电脑离线，不能读取模型" }
-        val result = (apis[key.hostId] ?: error("电脑未连接")).request("/api/v1/threads/${key.threadId}/models")
+        val suffix = if (histories.value[key]?.optBoolean("desktopTools") == true) "?nextMessage=true" else ""
+        val result = (apis[key.hostId] ?: error("电脑未连接")).request("/api/v1/threads/${key.threadId}/models$suffix")
         require(result.optString("hostId") == key.hostId && result.optString("threadId") == key.threadId && result.optString("instanceId") == host.instance && states.value[key.hostId]?.instance == host.instance) { "电脑实例已变化，请重新选择模型" }
         result
     }
@@ -313,6 +386,20 @@ class Repository(private val context: Context) {
     }
     fun clearUncertain(id: String) { store.put("pending-$id", "{}"); message.value = "发送锁定已解除；旧指令不会重发。" }
     fun draft(key: ThreadKey) = store.get("draft-${key.hostId}-${key.threadId}", "")
+    suspend fun sidebar(key: ThreadKey, instance: String, action: String, path: String = ""): JSONObject = withContext(Dispatchers.IO) {
+        val api = apis[key.hostId] ?: error("电脑未连接")
+        val result = api.request("/api/v1/threads/${key.threadId}/sidebar", JSONObject().put("instanceId", instance)
+            .put("hostId", key.hostId).put("action", action).put("path", path))
+        require(ownsApi(key.hostId, api) && states.value[key.hostId]?.instance == instance) { "电脑连接已变化" }
+        result
+    }
+    suspend fun preview(key: ThreadKey, instance: String, messageId: String, link: String): JSONObject = withContext(Dispatchers.IO) {
+        val api = apis[key.hostId] ?: error("电脑未连接")
+        val result = api.request("/api/v1/threads/${key.threadId}/preview", JSONObject()
+            .put("instanceId", instance).put("hostId", key.hostId).put("messageId", messageId).put("link", link))
+        require(ownsApi(key.hostId, api) && states.value[key.hostId]?.instance == instance) { "电脑连接已变化" }
+        result
+    }
     fun draft(key: ThreadKey, value: String) = store.put("draft-${key.hostId}-${key.threadId}", value)
     suspend fun image(key: ThreadKey, instance: String, imageId: String): ByteArray = withContext(Dispatchers.IO) {
         require(states.value[key.hostId]?.instance == instance) { "电脑实例已变化，请刷新会话" }

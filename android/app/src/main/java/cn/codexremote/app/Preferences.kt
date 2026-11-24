@@ -3,12 +3,18 @@ package cn.codexremote.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class HomeSelection(val hostId: String = "", val attention: Boolean = false) {
-    fun json(): String = JSONObject().put("hostId", hostId).put("attention", attention).toString()
-    fun without(id: String) = if (hostId == id) copy(hostId = "") else this
+data class HomeSelection(val hostId: String = "", val attention: Boolean = false, val projectHost: String = "", val project: String = "", val projectName: String = "") {
+    fun json(): String = JSONObject().put("hostId", hostId).put("attention", attention).put("projectHost", projectHost).put("project", project).put("projectName", projectName).toString()
+    fun host(value: String) = copy(hostId = value, projectHost = "", project = "", projectName = "")
+    fun without(id: String) = when (id) { hostId -> host(""); projectHost -> host(hostId); else -> this }
     companion object {
-        fun parse(value: String): HomeSelection = runCatching { JSONObject(value).let { HomeSelection(it.optString("hostId"), it.optBoolean("attention")) } }.getOrDefault(HomeSelection())
+        fun parse(value: String): HomeSelection = runCatching { JSONObject(value).let { HomeSelection(it.optString("hostId"), it.optBoolean("attention"), it.optString("projectHost"), it.optString("project"), it.optString("projectName")) } }.getOrDefault(HomeSelection())
     }
+}
+
+internal fun threadProject(thread: JSONObject): String {
+    val id = thread.optString("projectId").takeUnless { it == "null" }.orEmpty()
+    return if (id.isNotBlank()) "id/$id" else "unassigned"
 }
 
 fun modelOperation(catalog: JSONObject, model: String, effort: String): JSONObject {

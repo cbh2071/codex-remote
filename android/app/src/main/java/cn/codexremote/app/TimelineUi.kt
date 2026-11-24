@@ -36,7 +36,7 @@ private val Muted = Color(0xFF647168)
 private val Red = Color(0xFFAC3529)
 
 @Composable
-fun ConversationTimeline(thread: ThreadKey, view: JSONObject?, modifier: Modifier = Modifier, latestRequest: Int = 0, read: (String) -> Unit = {}, images: @Composable (JSONObject) -> Unit = {}, requestCard: @Composable (JSONObject) -> Unit) {
+fun ConversationTimeline(thread: ThreadKey, view: JSONObject?, modifier: Modifier = Modifier, latestRequest: Int = 0, read: (String) -> Unit = {}, images: @Composable (JSONObject) -> Unit = {}, edit: ((JSONObject) -> Unit)? = null, reuse: ((String) -> Unit)? = null, requestCard: @Composable (JSONObject) -> Unit) {
     val messages = view?.optJSONArray("messages")?.objects().orEmpty()
     val entries = remember(view) { timelineEntries(messages) }
     val requests = view?.optJSONArray("requests")?.objects().orEmpty()
@@ -76,7 +76,7 @@ fun ConversationTimeline(thread: ThreadKey, view: JSONObject?, modifier: Modifie
             items(requests.asReversed(), key = { "request/" + it.optString("id") }) { requestCard(it) }
             items(entries.asReversed(), key = { it.id }) { entry ->
                 if (entry.message != null) {
-                    if (entry.message.optString("kind") in setOf("fileChange", "diff")) FileChangeCard(entry.message) else ConversationMessage(entry.message, images)
+                    if (entry.message.optString("kind") in setOf("fileChange", "diff")) FileChangeCard(entry.message) else ConversationMessage(entry.message, images, edit, reuse)
                 } else ExecutionGroup(entry)
             }
             if (view == null) item(key = "loading") { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在读取原桌面会话…", fontSize = 12.sp) }
@@ -94,7 +94,7 @@ fun ConversationTimeline(thread: ThreadKey, view: JSONObject?, modifier: Modifie
 }
 
 @Composable
-private fun ConversationMessage(message: JSONObject, images: @Composable (JSONObject) -> Unit) {
+private fun ConversationMessage(message: JSONObject, images: @Composable (JSONObject) -> Unit, edit: ((JSONObject) -> Unit)?, reuse: ((String) -> Unit)?) {
     val kind = message.optString("kind")
     val user = kind in setOf("user", "userMessage", "steeringUserMessage")
     val text = message.optString("text")
@@ -104,8 +104,20 @@ private fun ConversationMessage(message: JSONObject, images: @Composable (JSONOb
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(if (user) "你" else if (kind == "error") "执行错误" else "Codex", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = if (user) Color(0xFFD2F56D) else if (kind == "error") Red else Muted)
             if (completedAnswer(message)) { Spacer(Modifier.width(8.dp)); CompletionDot("本轮已完成"); Text("已完成", color = Green, fontSize = 10.sp, modifier = Modifier.padding(start = 4.dp)) }
+            val target = message.optJSONObject("editTarget")
+            if (user && target != null && edit != null && target.optBoolean("allowed")) {
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { edit(target) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Outlined.Edit, "编辑这条消息", tint = Color.White, modifier = Modifier.size(16.dp)) }
+            } else if (user && reuse != null && text.isNotBlank() && !message.optBoolean("truncated") && message.optJSONArray("images").let { it == null || it.length() == 0 }) {
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { reuse(text) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Outlined.Edit, "编辑后作为新消息发送", tint = Color.White, modifier = Modifier.size(16.dp)) }
+            }
         }
-        if (!user && kind != "error") MarkdownText(text, Modifier.padding(top = 5.dp))
+        if (!user && kind != "error") {
+            val show = LocalMessageFileClick.current
+            val open: ((String) -> Unit)? = if (kind == "agentMessage" && show != null) ({ link -> show(message.optString("id"), link) }) else null
+            CompositionLocalProvider(LocalFileClick provides open) { MarkdownText(text, Modifier.padding(top = 5.dp)) }
+        }
         else SelectionContainer { Text(text, fontSize = 14.sp, lineHeight = 21.sp, color = if (user) Color.White else Color(0xFF1D2A23), modifier = Modifier.padding(top = 4.dp), maxLines = if (longInput) 7 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis) }
         if (longInput) Text("查看完整消息", fontSize = 11.sp, color = Color(0xFFD2F56D), modifier = Modifier.clickable { detail = true }.padding(top = 5.dp))
         images(message)

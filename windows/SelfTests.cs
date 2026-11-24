@@ -12,6 +12,40 @@ static class SelfTests
         void Check(bool value) { if (!value) throw new Exception("Assertion failed"); }
         var root = Path.Combine(Path.GetTempPath(), "CodexRemote-test-" + Guid.NewGuid()); var vault = new Vault(root);
         ImageTests.Run(Test, Check, vault, root);
+        Test("Project preview requires a real message link and stays in the workspace", () => {
+            var folder = Path.Combine(root, "preview");
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, "example file.txt"), "one\ntwo");
+            const string target = "example%20file.txt:2";
+            var good = ProjectPreview.Read(folder, $"[source]({target})", target).GetAwaiter().GetResult();
+            Check(good["line"]!.GetValue<int>() == 2 && good.S("text") == "one\ntwo");
+            foreach (var (link, markdown) in new[] {
+                (target, $"`[source]({target})`"), ("../outside.txt", "[outside](../outside.txt)"),
+                (".git/config.txt", "[hidden](.git/config.txt)"), ("test.exe", "[bin](test.exe)")
+            }) {
+                try { ProjectPreview.Read(folder, markdown, link).GetAwaiter().GetResult(); throw new Exception("Unexpected file access"); }
+                catch (ApiError error) { Check(error.Status is 403 or 415); }
+            }
+        });
+        Test("Session index uses configured Codex home", () => {
+            var previous = Environment.GetEnvironmentVariable("CODEX_HOME");
+            try
+            {
+                Environment.SetEnvironmentVariable("CODEX_HOME", root);
+                var id = Guid.NewGuid().ToString();
+                File.WriteAllText(Path.Combine(root, "session_index.jsonl"), J.Node(new { id }).ToJsonString());
+                Check(Desktop.CallerId() == id);
+                Environment.SetEnvironmentVariable("CODEX_HOME", null);
+                Check(ThreadSettings.CodexHome() == Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"));
+            }
+            finally { Environment.SetEnvironmentVariable("CODEX_HOME", previous); }
+        });
+        Test("Pairing expiry uses Android-compatible UTC format", () => {
+            var pairing = new Pairing(vault, Identity.Load(vault));
+            var qr = JsonNode.Parse(pairing.CreateQr("https://100.64.1.1:48761"))!;
+            var expiry = qr.S("expiresAt");
+            Check(expiry.EndsWith('Z') && DateTimeOffset.Parse(expiry) > DateTimeOffset.UtcNow);
+        });
         Test("Host identity survives restart", () => { Check(Identity.Load(vault).HostId == Identity.Load(vault).HostId); });
         Test("DPAPI roundtrip and no plaintext", () => { vault.Write("test", new { secret = "test-value-do-not-export" }); Check(vault.Read<JsonNode>("test").S("secret") == "test-value-do-not-export"); Check(!System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(root, "test.dpapi"))).Contains("test-value")); });
         Test("Only Tailscale CGNAT range", () => { Check(Program.Tailnet(IPAddress.Parse("100.64.0.1"))); Check(Program.Tailnet(IPAddress.Parse("100.127.255.254"))); foreach (var ip in new[] { "100.63.255.255", "100.128.0.1", "192.168.1.1", "127.0.0.1", "8.8.8.8", "::1" }) Check(!Program.Tailnet(IPAddress.Parse(ip))); });
@@ -39,6 +73,29 @@ static class SelfTests
         Test("Event resume and instance invalidation", () => { var events = new EventHub(); var instance = events.InstanceId; events.Publish("one", new { }); events.Publish("two", new { }); var subscription = events.Subscribe(instance, 1); Check(subscription.Replay.Length == 1 && subscription.Replay[0].S("type") == "two"); events.Remove(subscription.Channel); events.Reset(); var reset = events.Subscribe(instance, 2); Check(events.InstanceId != instance && reset.Replay[0].S("type") == "reset"); events.Remove(reset.Channel); });
         Test("Bounded event overflow requires resync", () => { var events = new EventHub(); var old = events.InstanceId; for (int i = 0; i < 300; i++) events.Publish("event", new { }); var sub = events.Subscribe(old, 1); Check(sub.Replay[0].S("type") == "reset"); events.Remove(sub.Channel); });
         Test("Pairing one-use and revocation", () => { var pairing = new Pairing(vault, Identity.Load(vault)) { Confirm = _ => Task.FromResult(true) }; var qr = JsonNode.Parse(pairing.CreateQr("https://100.64.1.1:48761"))!; var request = J.Node(new { secret = qr.S("secret"), deviceName = "test" }); var paired = J.Node(pairing.Pair(request).GetAwaiter().GetResult()); Check(pairing.Authenticate(paired.S("token")) != null); try { pairing.Pair(request).GetAwaiter().GetResult(); throw new Exception("Replay accepted"); } catch (ApiError) { } pairing.Revoke(paired.S("deviceId")); Check(pairing.Authenticate(paired.S("token")) == null); });
+        Test("Tailnet enrollment binds owner, node and endpoint and respects revocation across restart", () => {
+            var pairing = new Pairing(vault, Identity.Load(vault));
+            var status = JsonNode.Parse("""{"BackendState":"Running","Self":{"ID":"host","UserID":12,"TailscaleIPs":["100.64.1.1"]}}""")!;
+            var who = JsonNode.Parse("""{"Node":{"User":12,"StableID":"phone","Addresses":["100.64.1.2/32"]},"UserProfile":{"ID":12}}""")!;
+            var owner = TailnetEnrollment.Owner(status);
+            VerifiedPeer Peer(JsonNode response) => TailnetEnrollment.Verify(owner, status, response, System.Net.IPAddress.Parse("100.64.1.2"), System.Net.IPAddress.Parse("100.64.1.1"));
+            void Denied(Action action) { try { action(); throw new Exception("Enrollment accepted"); } catch (ApiError e) { Check(e.Status == 403); } }
+            Denied(() => pairing.Enroll(owner, Peer(who)));
+            foreach (var value in new [] { """{"User":11}""", """{"StableID":"host"}""", """{"Tags":["tag:shared"]}""", """{"Addresses":["100.64.1.8/32"]}""" }) {
+                var changed = who.Copy();
+                foreach (var p in JsonNode.Parse(value)!.AsObject()) changed["Node"]![p.Key] = p.Value?.Copy();
+                Denied(() => Peer(changed));
+            }
+            pairing.SetOwner(owner);
+            var created = J.Node(pairing.Enroll(owner, Peer(who)));
+            var again = J.Node(pairing.Enroll(owner, Peer(who)));
+            Check(created.S("token") == again.S("token") && pairing.Authenticate(created.S("token")) != null);
+            pairing.Revoke(created.S("deviceId"));
+            var reopened = new Pairing(vault, Identity.Load(vault));
+            Check(reopened.Authenticate(created.S("token")) == null);
+            Denied(() => reopened.Enroll(owner, Peer(who)));
+            reopened.SetOwner(null); Check(reopened.Owner == null);
+        });
         Test("Unknown pairing rejected", () => { var pairing = new Pairing(vault, Identity.Load(vault)); try { pairing.Pair(J.Node(new { deviceName = "test", secret = new string('0', 64) })).GetAwaiter().GetResult(); throw new Exception("Unauthenticated device accepted"); } catch (ApiError e) { Check(e.Status == 403); } });
         Test("Runtime handshake depends on protocol not desktop version or archive hash", () => {
             var schema = JsonNode.Parse("""{"type":"object","properties":{"limit":{"type":"integer"}},"additionalProperties":false}""")!;
@@ -67,6 +124,17 @@ static class SelfTests
             try { Compatibility.ValidateState(state, "t"); throw new Exception("Foreign state accepted"); } catch (ApiError) { }
         });
         JsonNode EditState() => JsonNode.Parse("""{"id":"thread-a","latestModel":"a","modelProvider":"provider-a","latestReasoningEffort":"high","requests":[],"turns":[{"turnId":"turn-a","status":"completed","params":{"clientUserMessageId":"c-a","useAppServerPermissionDefault":true,"input":[{"type":"text","text":"original"}]},"items":[{"type":"userMessage","clientId":"c-a","text":"original"},{"type":"agentMessage","phase":"final_answer","text":"done"}]}]}""")!;
+        Test("An old snapshot and a partial last reply cannot hide newer stored history", () => {
+            var state = EditState();
+            var page = JsonNode.Parse("""{"page":{"order":"newest_first","hasMore":true},"turns":[{"id":"turn-b","status":"completed","items":[{"type":"agentMessage","text":"new reply"}]},{"id":"turn-a","status":"completed","items":[]}]}""")!;
+            var stored = Desktop.StoredView("thread-a", page, "i");
+            Check(stored.S("latestTurnId") == "turn-b" && stored.Array("messages")[0].S("turnId") == "turn-b");
+            Check(ReferenceEquals(Desktop.CurrentView(state, stored, "i"), stored));
+            state["turns"]![0]!["turnId"] = "turn-b";
+            Check(ReferenceEquals(Desktop.CurrentView(state, stored, "i"), stored));
+            state["turns"]![0]!["items"]![1]!["text"] = "new reply";
+            Check(Desktop.CurrentView(state, stored, "i")["live"] == null);
+        });
         Test("Native editing targets only the latest message and never overrides permissions", () => {
             var state = EditState(); var target = ThreadSettings.EditTarget(state);
             var args = ThreadSettings.EditArguments(state, J.Node(new { editTurnId = "turn-a", editFingerprint = target.S("fingerprint"), text = "edited" }));
@@ -76,6 +144,24 @@ static class SelfTests
             var state = EditState(); var target = ThreadSettings.EditTarget(state);
             foreach (var body in new[] { J.Node(new { editTurnId = "turn-a", editFingerprint = "stale", text = "edited" }), J.Node(new { editTurnId = "turn-b", editFingerprint = target.S("fingerprint"), text = "edited" }) })
                 try { ThreadSettings.EditArguments(state, body); throw new Exception("Stale edit accepted"); } catch (ApiError e) { Check(e.Status == 409); }
+        });
+        Test("History accepts native structured status and older string status", () => {
+            Check(Desktop.CanReceiveText(J.Node(new { type = "idle" })) && Desktop.CanReceiveText(J.Node("notLoaded")));
+            Check(Desktop.CanReceiveText(J.Node(new { type = "active", activeFlags = Array.Empty<string>() })));
+            Check(!Desktop.CanReceiveText(J.Node(new { type = "active", activeFlags = new[] { "waitingOnApproval" } })));
+        });
+        Test("Earlier native edit is bound to selected turn and current tail", () => {
+            var state = EditState();
+            var turns = state.Array("turns");
+            var earlier = turns[0]!;
+            var later = earlier.Copy(); later["turnId"] = "turn-b"; turns.Add(later);
+            var target = ThreadSettings.EditTarget(state, earlier);
+            var body = J.Node(new { editTurnId = "turn-a", editFingerprint = target.S("fingerprint"), text = "revised" });
+            var args = ThreadSettings.EditArguments(state, body);
+            Check(args.S("turnId") == "turn-a" && args["allowEarlierMessages"]!.GetValue<bool>());
+            later["turnId"] = "new-tail";
+            try { ThreadSettings.EditArguments(state, body); throw new Exception("Changed tail accepted"); }
+            catch (ApiError e) { Check(e.Status == 409); }
         });
         Test("Running turns pending approvals and later steering block editing", () => {
             var state = EditState(); state["turns"]![0]!["status"] = "inProgress"; Check(ThreadSettings.EditTarget(state)["allowed"]!.GetValue<bool>() == false);
@@ -121,6 +207,14 @@ static class SelfTests
                 Environment.SetEnvironmentVariable("CODEX_HOME", home);
                 var state = EditState(); state["cwd"] = home;
                 Check(ThreadSettings.ReadCatalog(state).Matches);
+                var largePath = Path.Combine(home, "models.json");
+                var data = J.Node(new { models = new[] { new { slug = "gateway/model", instructions = new string('x', 5 * 1024 * 1024) } } });
+                File.WriteAllText(largePath, data.ToJsonString());
+                var large = ThreadSettings.ReadCatalog(state);
+                Check(large.Matches && ThreadSettings.Catalog(state, large.Catalog, true)[0].S("id") == "gateway/model");
+                using (var oversized = File.OpenWrite(largePath)) oversized.SetLength(32L * 1024 * 1024 + 1);
+                Check(!ThreadSettings.ReadCatalog(state).Matches);
+                File.WriteAllText(largePath, "{\"models\":[]}");
                 state["modelProvider"] = "other"; Check(!ThreadSettings.ReadCatalog(state).Matches);
                 state["modelProvider"] = "provider-a"; Directory.CreateDirectory(Path.Combine(home, ".codex")); File.WriteAllText(Path.Combine(home, ".codex", "config.toml"), "model = \"scoped\"");
                 Check(!ThreadSettings.ReadCatalog(state).Matches);

@@ -10,7 +10,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -32,7 +31,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -87,39 +85,56 @@ private fun Console(repo: Repository, incoming: ThreadKey?, consumeIncoming: () 
     var screen by rememberSaveable { mutableStateOf("home") }; var selected by remember { mutableStateOf<ThreadKey?>(null) }
     var createHost by rememberSaveable { mutableStateOf("") }
     var forkKey by remember { mutableStateOf<ThreadKey?>(null) }
+    var sidebar by remember(selected) { mutableStateOf(false) }
+    val parents = remember { mutableStateListOf<ThreadKey>() }
+    fun back() {
+        if (screen == "thread" && parents.isNotEmpty()) selected = parents.removeAt(parents.lastIndex)
+        else { parents.clear(); screen = "home"; selected = null }
+    }
     var pairingText by remember { mutableStateOf("") }; var pairing by remember { mutableStateOf(false) }; val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+    var manualPair by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(message) { if (message.isNotEmpty()) { snackbar.showSnackbar(message); repo.message.value = "" } }
     LaunchedEffect(incoming) { if (incoming != null && hosts.containsKey(incoming.hostId)) { selected = incoming; screen = "thread"; consumeIncoming() } }
-    LaunchedEffect(scanned) { if (scanned != null) { pairingText = scanned; screen = "pair"; consumeScan() } }
-    BackHandler(screen != "home") { screen = "home"; selected = null }
+    LaunchedEffect(scanned) { if (scanned != null) { pairingText = scanned; manualPair = true; screen = "pair"; consumeScan() } }
+    BackHandler(screen != "home") { back() }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = Paper, topBar = {
         TopAppBar(expandedHeight = 56.dp, title = {
             if (screen == "thread") Column {
                 Text(selected?.let { histories[it]?.optString("title") }?.ifBlank { "会话" } ?: "会话", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(hosts[selected?.hostId]?.host?.name ?: "电脑已移除", fontSize = 11.sp, color = Forest, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            } else Text(if (screen == "home") "随行" else if (screen == "hosts") "我的电脑" else if (screen == "create") "新建会话" else "连接新电脑", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+            } else Text(if (screen == "home") "codex随行" else if (screen == "hosts") "我的电脑" else if (screen == "create") "新建会话" else "连接电脑", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         },
-            navigationIcon = { if (screen != "home") IconButton(onClick = { screen = "home"; selected = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
-            actions = { if (screen == "thread" && selected != null) IconButton(onClick = { forkKey = selected }) { Icon(Icons.AutoMirrored.Outlined.CallSplit, "Fork 当前会话") }; if (hosts.isNotEmpty() && screen != "create") IconButton(onClick = { createHost = selected?.hostId.orEmpty(); screen = "create" }) { Icon(Icons.Outlined.AddComment, "新建会话") }; IconButton(onClick = { repo.refreshAll() }) { Icon(Icons.Outlined.Refresh, "刷新") }; IconButton(onClick = { screen = "hosts" }) { Icon(Icons.Outlined.Dns, "电脑管理") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Paper))
+            navigationIcon = { if (screen != "home") IconButton(onClick = { back() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
+            actions = {
+                if (screen == "thread" && selected != null) {
+                    IconButton(onClick = { sidebar = true }) { Icon(Icons.Outlined.Folder, "项目文件与关联会话") }
+                    IconButton(onClick = { forkKey = selected }) { Icon(Icons.AutoMirrored.Outlined.CallSplit, "Fork 当前会话") }
+                    IconButton(onClick = { createHost = selected?.hostId.orEmpty(); screen = "create" }) { Icon(Icons.Outlined.AddComment, "新建会话") }
+                }
+                if (hosts.isNotEmpty() && screen in listOf("home", "thread", "hosts")) IconButton(onClick = { repo.refreshAll() }) { Icon(Icons.Outlined.Refresh, "刷新") }
+                if (screen != "hosts") IconButton(onClick = { screen = "hosts" }) { Icon(Icons.Outlined.Dns, "电脑管理") }
+            }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Paper))
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            when (screen) {
-                "pair" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                    Text("一台电脑，一份信任。", style = MaterialTheme.typography.headlineLarge)
-                    Text("电脑运行 CodexRemote.exe，同一 Wi-Fi／局域网可直接扫码，无需 Tailscale。请在电脑选择局域网地址，扫码后再在电脑确认。", color = Color(0xFF56645A))
-                    Text("外出访问时可选 Tailscale。已经配对的电脑，可在“我的电脑 → 修改连接地址”切换网络，保留原信任与草稿。", style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(onClick = { val launch = context.packageManager.getLaunchIntentForPackage("com.tailscale.ipn"); if (launch != null) context.startActivity(launch) else repo.message.value = "同一局域网不需要 Tailscale；外出访问时再安装并连接" }, enabled = !pairing) { Text("外出时打开 Tailscale（可选）") }
-                    FilledTonalButton(onClick = scan, enabled = !pairing, modifier = Modifier.fillMaxWidth().height(56.dp)) { Icon(Icons.Outlined.QrCodeScanner, null); Spacer(Modifier.width(10.dp)); Text("扫描电脑配对码") }
-                    OutlinedTextField(value = pairingText, onValueChange = { pairingText = it }, label = { Text("也可以粘贴电脑复制的配对码") }, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 200.dp), enabled = !pairing)
-                    Button(onClick = { scope.launch { pairing = true; try { val name = repo.pair(pairingText); pairingText = ""; repo.message.value = "已连接 $name"; screen = "home" } catch (e: Exception) { repo.message.value = connectionMessage(e) } finally { pairing = false } } }, enabled = !pairing && pairingText.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp)) { if (pairing) { CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(Modifier.width(12.dp)) }; Text(if (pairing) "请在电脑上确认…" else "核对并配对") }
-                    Text("配对码 5 分钟有效，只能使用一次。证书不匹配时会拒绝连接；手机不保存模型账号密钥。", style = MaterialTheme.typography.bodySmall)
+            when (if (screen == "home" && hosts.isEmpty()) "pair" else screen) {
+                "pair" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (screen == "home") Text("连接电脑", style = MaterialTheme.typography.titleLarge)
+                    TailnetSettings(repo) { screen = "home" }
+                    HorizontalDivider()
+                    OutlinedButton(onClick = scan, enabled = !pairing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(8.dp)) { Icon(Icons.Outlined.QrCodeScanner, null); Spacer(Modifier.width(10.dp)); Text("扫描电脑配对码") }
+                    TextButton(onClick = { manualPair = !manualPair }, enabled = !pairing) { Text(if (manualPair) "收起配对码" else "粘贴配对码"); Icon(if (manualPair) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null) }
+                    if (manualPair) {
+                        OutlinedTextField(value = pairingText, onValueChange = { pairingText = it }, label = { Text("配对码") }, maxLines = 3, modifier = Modifier.fillMaxWidth(), enabled = !pairing)
+                        Button(onClick = { scope.launch { pairing = true; try { val name = repo.pair(pairingText); pairingText = ""; manualPair = false; repo.message.value = "已连接 $name"; screen = "home" } catch (e: Exception) { repo.message.value = connectionMessage(e) } finally { pairing = false } } }, enabled = !pairing && pairingText.isNotBlank()) { Text(if (pairing) "等待电脑确认…" else "核对并配对") }
+                    }
                 }
-                "hosts" -> HostsScreen(hosts.values.toList(), repo, { screen = "pair" })
+                "hosts" -> HostsScreen(hosts.values.toList(), repo, background, monitor, { screen = "pair" })
                 "create" -> NewThreadScreen(hosts.values.filter { it.host.followed }, repo, createHost, { key -> selected = key; screen = "thread" }, { screen = "home" })
-                "thread" -> selected?.let { key -> ThreadScreen(key, repo, hosts[key.hostId]) }
-                else -> HomeScreen(hosts.values.toList(), repo, background, monitor, { screen = "pair" }, { id -> createHost = id; screen = "create" }, { key -> selected = key; screen = "thread" })
+                "thread" -> selected?.let { key -> ProjectFileScope(key, repo, hosts[key.hostId]?.instance.orEmpty(), sidebar, { sidebar = false }, { child ->
+                    parents.add(key); selected = ThreadKey(key.hostId, child)
+                }) { ThreadScreen(key, repo, hosts[key.hostId]) } }
+                else -> HomeScreen(hosts.values.toList(), repo, { screen = "hosts" }, { id -> createHost = id; screen = "create" }, { key -> selected = key; screen = "thread" })
             }
         }
     }
@@ -127,62 +142,110 @@ private fun Console(repo: Repository, incoming: ThreadKey?, consumeIncoming: () 
 }
 
 @Composable
-private fun HomeScreen(hosts: List<HostState>, repo: Repository, background: Boolean, monitor: () -> Unit, add: () -> Unit, create: (String) -> Unit, open: (ThreadKey) -> Unit) {
+private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> Unit, create: (String) -> Unit, open: (ThreadKey) -> Unit) {
     val selection by repo.homeSelection.collectAsState(); val unread by repo.unreadCompletions.collectAsState()
     val filter = selection.hostId; val attention = selection.attention
     val followed = hosts.filter { it.host.followed }
-    val tasks = followed.filter { filter.isEmpty() || filter == it.host.id }.flatMap { h -> h.threads.map { h to it } }.filter { !attention || it.second.optString("status") in listOf("active", "needsInput") }.sortedByDescending { it.second.optString("updatedAt") }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item {
-            if (hosts.isNotEmpty()) Row(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Forest, Color(0xFF305642))), RoundedCornerShape(16.dp)).padding(horizontal = 15.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("${followed.count { it.online }} 台在线 · ${followed.sumOf { h -> h.threads.count { it.optString("status") == "active" } }} 个任务运行中", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                    Text(if (background) "后台监控已开启" else "离开应用后继续关注", fontSize = 11.sp, color = Color(0xFFD4DFD4))
-                }
-                Switch(checked = background, onCheckedChange = { monitor() }, colors = SwitchDefaults.colors(checkedTrackColor = Lime, checkedThumbColor = Forest))
-            } else Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Forest, Color(0xFF305642))), RoundedCornerShape(24.dp)).padding(22.dp)) {
-                Text("CODEX  /  PRIVATE LINK", fontFamily = FontFamily.Monospace, color = Lime, fontSize = 11.sp, letterSpacing = 1.5.sp)
-                Spacer(Modifier.height(12.dp)); Text("电脑在跑，\n你不必在场。", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 30.sp, color = Color.White, lineHeight = 39.sp)
-                Spacer(Modifier.height(16.dp)); Text("${followed.count { it.online }} 台在线  ·  ${followed.sumOf { h -> h.threads.count { it.optString("status") == "active" } }} 个任务运行中", color = Color(0xFFD4DFD4))
-                Spacer(Modifier.height(14.dp)); Row(verticalAlignment = Alignment.CenterVertically) { Text(if (background) "后台监控已开启" else "离开应用后继续关注", color = Color.White, modifier = Modifier.weight(1f)); Switch(checked = background, onCheckedChange = { monitor() }, colors = SwitchDefaults.colors(checkedTrackColor = Lime, checkedThumbColor = Forest)) }
+    val visibleHosts = followed.filter { filter.isEmpty() || filter == it.host.id }
+    var retry by remember { mutableIntStateOf(0) }
+    val refreshed by repo.catalogRefresh.collectAsState()
+    val indexes = visibleHosts.associate { h -> h.host.id to key(h.host.id) { projectIndex(repo, h, retry + refreshed) } }
+    val groups = visibleHosts.flatMap { h ->
+        (h.threads + indexes[h.host.id]?.threads.orEmpty()).distinctBy { it.getString("id") }.map { h to it }
+    }.groupBy { (h, thread) -> h.host.id to threadProject(thread) }
+    fun projectName(id: Pair<String, String>): String {
+        if (id.second == "unassigned") return "未归入项目"
+        return indexes[id.first]?.names?.get(id.second)
+            ?: groups[id]?.firstOrNull()?.second?.optString("cwd")?.trimEnd('/', '\\')?.substringAfterLast('\\')?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: id.second.removePrefix("id/")
+    }
+    val inProject = selection.project.isNotEmpty()
+    val tasks = groups[selection.projectHost to selection.project].orEmpty()
+        .filter { !attention || it.second.optString("status") in listOf("active", "needsInput") }
+        .sortedByDescending { it.second.optLong("updatedAt") }
+    fun backToProjects() { repo.selectHome(selection.host(filter)) }
+    BackHandler(inProject) { backToProjects() }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 18.dp)) {
+        item { Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (inProject) IconButton(onClick = ::backToProjects) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回项目列表") }
+            Column(Modifier.weight(1f)) {
+                Text(if (inProject) selection.projectName else "项目", style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                val projectRows = groups[selection.projectHost to selection.project].orEmpty()
+                val subtitle = if (inProject) "${projectRows.size} 个会话" else "${visibleHosts.count { it.online }} / ${visibleHosts.size} 台电脑在线"
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Forest)
             }
-        }
-        item {
+            if (followed.isNotEmpty()) FilledTonalIconButton(onClick = { create(selection.projectHost.ifEmpty { filter }) }) { Icon(Icons.Outlined.AddComment, "新建会话") }
+        } }
+        if (followed.size > 1 && !inProject) item {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = filter.isEmpty(), onClick = { repo.selectHome(selection.copy(hostId = "")) }, label = { Text("全部关注") })
-                followed.forEach { h -> FilterChip(selected = filter == h.host.id, onClick = { repo.selectHome(selection.copy(hostId = h.host.id)) }, label = { Text((if (h.online) "● " else "○ ") + h.host.name) }) }
-                AssistChip(onClick = add, label = { Text("添加") }, leadingIcon = { Icon(Icons.Outlined.Add, null, Modifier.size(16.dp)) })
+                FilterChip(selected = filter.isEmpty(), onClick = { repo.selectHome(selection.host("")) }, label = { Text("全部关注") })
+                followed.forEach { h -> FilterChip(selected = filter == h.host.id, onClick = { repo.selectHome(selection.host(h.host.id)) }, label = { Text((if (h.online) "● " else "○ ") + h.host.name) }) }
             }
         }
-        item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("任务看板", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f)); if (followed.isNotEmpty()) FilledTonalButton(onClick = { create(filter) }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp)) { Icon(Icons.Outlined.Add, null, Modifier.size(16.dp)); Text("新建会话", fontSize = 12.sp) } } }
-        if (tasks.isNotEmpty() || attention) item { FilterChip(selected = attention, onClick = { repo.selectHome(selection.copy(attention = !attention)) }, label = { Text("只看运行 / 待处理") }) }
-        followed.filter { !it.online }.forEach { h -> item(key = "offline-${h.host.id}") { Surface(color = Color(0xFFFFE9CF), shape = RoundedCornerShape(14.dp)) { Column(Modifier.fillMaxWidth().padding(14.dp)) { Text("${h.host.name} · 暂未连接", fontWeight = FontWeight.Bold); Text(h.error, style = MaterialTheme.typography.bodySmall); Text("不会把指令转发到其他电脑。", style = MaterialTheme.typography.bodySmall) } } } }
-        if (hosts.isEmpty()) item { EmptyState("从第一台电脑开始", "在 Windows 上运行桥接程序，然后扫码。每台电脑独立连接，互不影响。", add) }
-        else if (tasks.isEmpty()) item { Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(if (attention) "暂时没有运行或待处理任务" else "从新会话开始", style = MaterialTheme.typography.titleLarge); Text("可以在手机选择电脑和工作位置，直接发送首条指令。", color = Color(0xFF667268)); OutlinedButton(onClick = { create(filter) }) { Text("新建会话") } } }
-        items(tasks, key = { "${it.first.host.id}/${it.second.optString("id")}" }) { (h, t) ->
-            Card(onClick = { open(ThreadKey(h.host.id, t.optString("id"))) }, colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { Text(h.host.name, fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Forest, modifier = Modifier.weight(1f)); StatusPill(t.optString("status")) }
-                    Row(verticalAlignment = Alignment.CenterVertically) { if (unread.containsKey(ThreadKey(h.host.id, t.optString("id")))) { CompletionDot("有新的已完成回复"); Spacer(Modifier.width(7.dp)) }; Text(t.optString("title", "未命名会话"), maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
-                    val summary = t.optString("summary"); if (summary.isNotEmpty()) Text(summary, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Color(0xFF667268), fontSize = 13.sp)
+        if (!inProject) items(groups.keys.sortedByDescending { k -> groups[k].orEmpty().maxOfOrNull { it.second.optLong("updatedAt") } ?: 0L }, key = { "project/${it.first}/${it.second}" }) { id ->
+            val rows = groups.getValue(id)
+            val name = projectName(id)
+            Row(Modifier.fillMaxWidth().clickable { repo.selectHome(selection.copy(projectHost = id.first, project = id.second, projectName = name)) }.heightIn(min = 60.dp).padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(36.dp).background(Color(0xFFE0EBE4), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Folder, null, Modifier.size(20.dp), tint = Forest) }
+                Column(Modifier.weight(1f)) {
+                    Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    if (visibleHosts.size > 1) Text(rows.first().first.host.name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text("${rows.size} 个会话", style = MaterialTheme.typography.bodySmall, color = Forest)
+                Icon(Icons.Outlined.ChevronRight, null, Modifier.size(16.dp))
+            }
+            HorizontalDivider(color = Color(0xFFDDE3DE))
+        }
+        if (indexes.values.any { it.loading }) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        indexes.filterValues { it.error.isNotEmpty() }.forEach { (host, _) ->
+            item { TextButton(onClick = { retry++ }) { Text("${visibleHosts.first { it.host.id == host }.host.name} · 历史加载失败，重试") } }
+        }
+        if (inProject && (tasks.isNotEmpty() || attention)) item { FilterChip(selected = attention, onClick = { repo.selectHome(selection.copy(attention = !attention)) }, label = { Text("只看运行 / 待处理") }) }
+        visibleHosts.filter { !it.online && (!inProject || selection.projectHost == it.host.id) }.forEach { h -> item(key = "offline-${h.host.id}") {
+            var expanded by rememberSaveable { mutableStateOf(false) }
+            Column { Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp), tint = Color(0xFF896321))
+                Text("${h.host.name} · 暂未连接", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "收起详情" else "连接详情")
+            }; if (expanded) Text(h.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
+        } }
+        visibleHosts.filter { it.online && it.catalogError != null }.forEach { h ->
+            item(key = "catalog-error-${h.host.id}") {
+                Column(Modifier.padding(12.dp)) {
+                    Text("${h.host.name} · 会话列表加载失败", fontWeight = FontWeight.Bold)
+                    Text(h.catalogError.orEmpty(), style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = repo::refreshAll) { Text("重试") }
                 }
             }
         }
-        item { Text("私网直连 · 不迁移对话 · 不自动重发指令", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Color(0xFF667268), modifier = Modifier.padding(vertical = 12.dp)) }
+        if (followed.isEmpty()) item { TextButton(onClick = manage) { Text("选择要关注的电脑") } }
+        else if ((if (inProject) tasks.isEmpty() else groups.isEmpty()) && indexes.values.all { !it.loading && it.error.isEmpty() } && visibleHosts.isNotEmpty() && visibleHosts.all { it.online && it.catalogLoaded && it.catalogError == null }) item { Text(if (attention && inProject) "暂时没有运行或待处理任务" else "暂无会话", modifier = Modifier.padding(12.dp)) }
+        items(tasks, key = { "${it.first.host.id}/${it.second.optString("id")}" }) { (h, t) ->
+            Column(Modifier.fillMaxWidth().clickable { open(ThreadKey(h.host.id, t.optString("id"))) }.heightIn(min = 52.dp).padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (unread.containsKey(ThreadKey(h.host.id, t.optString("id")))) CompletionDot("有新的已完成回复")
+                        Text(t.optString("title", "未命名会话"), modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                        StatusPill(t.optString("status"))
+                    }
+                    val summary = t.optString("summary"); if (summary.isNotEmpty()) Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Color(0xFF57665C), style = MaterialTheme.typography.bodySmall)
+                }
+            HorizontalDivider(color = Color(0xFFDDE3DE))
+        }
     }
 }
 
 @Composable private fun StatusPill(status: String) { val text = when(status) { "active", "inProgress" -> "运行中"; "needsInput" -> "待处理"; "failed" -> "失败"; "completed" -> "已完成"; "notLoaded" -> "历史"; "interrupted" -> "已中断"; else -> "空闲" }; Surface(color = if (status == "needsInput") Color(0xFFFFD8A5) else if (status == "active") Lime else Color(0xFFEDF0E8), shape = RoundedCornerShape(30.dp)) { Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), fontSize = 11.sp, color = Forest) } }
-@Composable private fun EmptyState(title: String, detail: String, add: () -> Unit) { Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.titleLarge); Text(detail, color = Color(0xFF667268)); OutlinedButton(onClick = add) { Text("添加电脑") } } }
 
 @Composable
-private fun HostsScreen(hosts: List<HostState>, repo: Repository, add: () -> Unit) {
+private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Boolean, monitor: () -> Unit, add: () -> Unit) {
     var editing by remember { mutableStateOf<HostState?>(null) }; var name by remember { mutableStateOf("") }; var removing by remember { mutableStateOf<HostState?>(null) }; var unlock by remember { mutableStateOf<HostState?>(null) }
     var licenses by remember { mutableStateOf(false) }
     var connection by remember { mutableStateOf<Host?>(null) }
     val context = LocalContext.current
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Button(onClick = add, modifier = Modifier.fillMaxWidth().height(52.dp)) { Icon(Icons.Outlined.Add, null); Text("添加另一台电脑") } }
+        item { Button(onClick = add, modifier = Modifier.fillMaxWidth().height(48.dp)) { Icon(Icons.Outlined.Add, null); Text("连接电脑") } }
+        item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("后台监控", modifier = Modifier.weight(1f)); Switch(checked = background, onCheckedChange = { monitor() }) } }
+        item { TailnetSettings(repo) }
         items(hosts, key = { it.host.id }) { h -> Card(colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Text(h.host.name, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f)); Switch(checked = h.host.followed, onCheckedChange = { repo.follow(h.host.id, it) }) }
             Text(if (h.online) "在线 · ${h.threads.size} 个最近会话" else h.error, color = Forest); Text("${connectionKind(h.host.url)} · ${h.host.url}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
@@ -223,40 +286,66 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
     DisposableEffect(key) { repo.watch(key); onDispose { repo.unwatch(key) } }
     val active = view?.optString("activeTurnId").orEmpty(); val live = view?.optBoolean("live", true) == true
     val enabled = host?.online == true && host.compatible && view != null && live && !busy
+    val desktopTools = view?.optBoolean("desktopTools") == true
+    val textOnlySend = desktopTools && view?.optBoolean("canSendText") == true && host?.online == true && host.compatible && !busy
+    var nextModel by remember(key, host?.instance) { mutableStateOf<JSONObject?>(null) }
+    var resend by remember(key) { mutableStateOf<String?>(null) }
+    val modelEnabled = enabled || desktopTools && host?.online == true && host.compatible && !busy
     fun operate(type: String, fields: JSONObject = JSONObject(), success: () -> Unit = {}) {
         if (busy) return
         busy = true
         scope.launch {
-            try { repo.message.value = repo.operate(key, type, fields); if (type == "send" || type == "steer") { if (draft == fields.optString("text")) { draft = ""; repo.draft(key, "") }; selectedImages = repo.imageDrafts.list(key); latestRequest++ }; if (type == "edit") latestRequest++; success() }
+            try {
+                if (desktopTools && type in setOf("send", "steer")) nextModel?.let { choice ->
+                    for (field in listOf("model", "effort", "expectedProvider")) fields.put(field, choice.getString(field))
+                }
+                repo.message.value = repo.operate(key, type, fields)
+                if (type == "send" || type == "steer") { nextModel = null; if (draft == fields.optString("text")) { draft = ""; repo.draft(key, "") }; selectedImages = repo.imageDrafts.list(key); latestRequest++ }
+                if (type == "edit") latestRequest++
+                success()
+            }
             catch (e: Exception) { repo.message.value = e.message ?: "未能发送；请刷新核对" }
             finally { busy = false }
         }
     }
     Column(Modifier.fillMaxSize()) {
-        if (!live || host?.online != true) Column(Modifier.fillMaxWidth().background(Color(0xFFFFE9CF)).padding(horizontal = 12.dp, vertical = 5.dp)) {
-            if (!live) TextButton(onClick = { operate("activate") }, enabled = host?.online == true && host.compatible && !busy) { Text("在电脑打开这个现有会话并接入", fontSize = 12.sp) }
+        if (host?.online != true || view != null && !live && !textOnlySend) Column(Modifier.fillMaxWidth().background(Color(0xFFFFE9CF)).padding(horizontal = 12.dp, vertical = 5.dp)) {
+            if (host?.online == true && view != null && !live && !busy) {
+                if (desktopTools) Text("当前会话暂不能接收文字，请刷新查看状态", fontSize = 12.sp)
+                else TextButton(onClick = { operate("activate") }, enabled = host.compatible) { Text("请求桌面接入会话") }
+            }
             if (host?.online != true) Text("电脑离线：仅保存草稿，不会排队发送", color = Color(0xFF9A4F17), fontSize = 11.sp)
         }
         ConversationTimeline(key, view, Modifier.weight(1f), latestRequest, { turn -> repo.markRead(key, turn) }, images = { message ->
             val instance = view?.optString("instanceId").orEmpty()
             ChatImages(message, "${key.hostId}/${key.threadId}/$instance") { id -> repo.image(key, instance, id) }
-        }) { request -> RequestCard(request, enabled, { fields -> operate("decision", fields) }, { fields -> operate("answer", fields) }) }
+        }, edit = if (enabled) ({ item -> editTarget = JSONObject(item.toString()).put("instanceId", view?.optString("instanceId")) }) else null,
+            reuse = if (textOnlySend) ({ text -> resend = text }) else null) { request -> RequestCard(request, enabled, { fields -> operate("decision", fields) }, { fields -> operate("answer", fields) }) }
         Column(Modifier.fillMaxWidth().background(Paper).imePadding().padding(horizontal = 10.dp, vertical = 5.dp)) {
             LatestFilesButton(view)
             LatestThought(view, active.isNotEmpty(), enabled) { stopConfirm = true }
             DraftImages(selectedImages, "${key.hostId}/${key.threadId}/draft", !busy, { id -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repo.imageDrafts.bytes(key, id) } }) { id -> repo.imageDrafts.remove(key, setOf(id)); selectedImages = repo.imageDrafts.list(key) }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { modelDialog = true }, enabled = enabled, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.heightIn(min = 32.dp).weight(1f)) { Text(view?.optString("model")?.substringAfterLast('/')?.ifBlank { "选择模型" } ?: "选择模型", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Icon(Icons.Outlined.ExpandMore, "切换模型", Modifier.size(15.dp)) }
-                TextButton(onClick = { editTarget = view?.optJSONObject("editTarget")?.let { JSONObject(it.toString()).put("instanceId", view.optString("instanceId")) } }, enabled = enabled && view?.optJSONObject("editTarget") != null, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.heightIn(min = 32.dp)) { Icon(Icons.Outlined.Edit, null, Modifier.size(13.dp)); Text("编辑最新消息", fontSize = 11.sp) }
+                TextButton(onClick = { modelDialog = true }, enabled = modelEnabled, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.heightIn(min = 32.dp).weight(1f)) { Text(nextModel?.optString("model") ?: view?.optString("model")?.substringAfterLast('/')?.ifBlank { "选择模型" } ?: "选择模型", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Icon(Icons.Outlined.ExpandMore, "切换模型", Modifier.size(15.dp)) }
             }
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(onClick = { pickerTarget = key; busy = true; imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !busy && selectedImages.size < MAX_IMAGES, modifier = Modifier.size(40.dp)) { Icon(Icons.Outlined.AddPhotoAlternate, "添加图片") }
+                IconButton(onClick = { pickerTarget = key; busy = true; imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !desktopTools && !busy && selectedImages.size < MAX_IMAGES, modifier = Modifier.size(40.dp)) { Icon(Icons.Outlined.AddPhotoAlternate, "添加图片") }
                 OutlinedTextField(draft, { draft = it; repo.draft(key, it) }, placeholder = { Text(if (active.isNotEmpty()) "追加指示…" else "发送指令…", fontSize = 14.sp) }, textStyle = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).heightIn(max = 120.dp), shape = RoundedCornerShape(14.dp), maxLines = 4)
-                FilledIconButton(onClick = { operate(if (active.isEmpty()) "send" else "steer", JSONObject().put("text", draft).put("draftImageIds", JSONArray(selectedImages.map { it.id }))) }, enabled = enabled && (draft.isNotBlank() || selectedImages.isNotEmpty()), modifier = Modifier.size(48.dp)) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.AutoMirrored.Outlined.Send, "发送") }
+                FilledIconButton(onClick = { operate(if (active.isEmpty()) "send" else "steer", JSONObject().put("text", draft).put("draftImageIds", JSONArray(selectedImages.map { it.id }))) }, enabled = enabled && (draft.isNotBlank() || selectedImages.isNotEmpty()) || textOnlySend && draft.isNotBlank() && selectedImages.isEmpty(), modifier = Modifier.size(48.dp)) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.AutoMirrored.Outlined.Send, "发送") }
             }
         }
     }
-    if (modelDialog) ModelDialog(key, host, repo, enabled, { modelDialog = false }) { fields -> operate("model", fields) { modelDialog = false } }
+    if (modelDialog) ModelDialog(key, host, repo, modelEnabled, { modelDialog = false }) { fields ->
+        if (desktopTools) { nextModel = fields; modelDialog = false } else operate("model", fields) { modelDialog = false }
+    }
+    resend?.let { original ->
+        var revised by remember(original) { mutableStateOf(original) }
+        AlertDialog(onDismissRequest = { if (!busy) resend = null }, title = { Text("编辑后作为新消息发送") }, text = {
+            Column { Text("新消息将追加到当前会话，保留之前的对话。"); OutlinedTextField(revised, { revised = it }, enabled = !busy, maxLines = 9) }
+        }, confirmButton = { TextButton(enabled = textOnlySend && revised.isNotBlank() && revised.length <= 32000, onClick = {
+            operate(if (active.isEmpty()) "send" else "steer", JSONObject().put("text", revised)) { resend = null }
+        }) { Text("发送新消息") } }, dismissButton = { TextButton(enabled = !busy, onClick = { resend = null }) { Text("取消") } })
+    }
     editTarget?.let { target -> EditMessageDialog(key, target, view, repo, enabled, { editTarget = null }) { fields, clear -> operate("edit", fields) { clear(); editTarget = null } } }
     if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("中断 ${host?.host?.name} 上的任务？") }, text = { Text("只中断当前会话的这一轮，不影响其他电脑。") }, confirmButton = { TextButton(onClick = { stopConfirm = false; operate("interrupt") }) { Text("确认中断") } }, dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("继续运行") } })
 }
