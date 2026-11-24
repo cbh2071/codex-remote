@@ -7,7 +7,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,9 +54,9 @@ fun ForkDialog(key: ThreadKey, host: HostState?, title: String, repo: Repository
                     Column(Modifier.padding(top = 8.dp)) { Text("新工作树（worktree）", fontSize = 13.sp); Text("从当前工作区状态建立隔离副本，需 Git 仓库。", fontSize = 11.sp) }
                 }
                 context?.optString("cwd")?.takeIf { it.isNotEmpty() }?.let { path -> SelectionContainer { Text(path, fontSize = 11.sp, fontFamily = FontFamily.Monospace) } }
-                if (context != null && !context!!.optBoolean("canWorktree")) Text("${if (!canFork) context!!.optString("reason") else "当前目录不是已确认的 Git 仓库，不能新建工作树。"}", fontSize = 12.sp, color = Color(0xFF9B4D1A))
+                if (context != null && !context!!.optBoolean("canWorktree")) Text("${if (!canFork) context!!.optString("reason") else "当前目录不是已确认的 Git 仓库，不能新建工作树。"}", fontSize = 12.sp, color = appColors.tertiary)
                 if (host?.online != true) Text("电脑离线，不排队创建，也不会改发到其他电脑。", fontSize = 12.sp)
-                if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = Color(0xFFAC3529))
+                if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = appColors.error)
                 TextButton(onClick = { reload++ }, enabled = !busy && !loading && host?.online == true) { Text("刷新来源状态", fontSize = 12.sp) }
             }
         }
@@ -77,7 +76,7 @@ fun ForkDialog(key: ThreadKey, host: HostState?, title: String, repo: Repository
                     finally { busy = false }
                 }
             }, enabled = !busy && !loading && host?.online == true && host.compatible && context?.optBoolean("canFork") == true && (environment == "same-directory" || context?.optBoolean("canWorktree") == true)) {
-                if (busy) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White); Spacer(Modifier.width(8.dp)) }
+                if (busy) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = appColors.onPrimary); Spacer(Modifier.width(8.dp)) }
                 Text(if (busy) "正在 Fork…" else "创建 Fork")
             }
         }

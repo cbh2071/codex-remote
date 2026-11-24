@@ -40,6 +40,12 @@ class Repository(private val context: Context) {
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val store = SecureStore(context)
+    private val appearance = context.getSharedPreferences("appearance", Context.MODE_PRIVATE)
+    internal val themeMode = MutableStateFlow(ThemeMode.entries.find { it.name == appearance.getString("theme", null) } ?: ThemeMode.SYSTEM)
+    internal fun selectTheme(mode: ThemeMode) {
+        appearance.edit().putString("theme", mode.name).apply()
+        themeMode.value = mode
+    }
     val imageDrafts = ImageDrafts(context, store)
     val states = MutableStateFlow<Map<String, HostState>>(emptyMap())
     val histories = MutableStateFlow<Map<ThreadKey, JSONObject>>(emptyMap())

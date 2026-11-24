@@ -25,8 +25,6 @@ import org.commonmark.ext.gfm.strikethrough.Strikethrough
 import org.commonmark.ext.gfm.tables.*
 import org.commonmark.node.*
 
-private val MdInk = Color(0xFF1D2A23)
-private val MdGreen = Color(0xFF205B44)
 internal val LocalFileClick = compositionLocalOf<((String) -> Unit)?> { null }
 internal val LocalMessageFileClick = compositionLocalOf<((String, String) -> Unit)?> { null }
 internal fun projectFileLink(value: String): Boolean {
@@ -53,17 +51,17 @@ private fun MarkdownBlock(node: Node, depth: Int = 0) {
         is IndentedCodeBlock -> MarkdownCode(node.literal.trimEnd('\n'), "代码")
         is BulletList, is OrderedList -> Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
             node.children().forEachIndexed { index, item -> Row {
-                Text(if (node is OrderedList) "${node.markerStartNumber + index}." else "•", fontSize = 14.sp, color = MdGreen, modifier = Modifier.widthIn(min = 23.dp).padding(end = 5.dp))
+                Text(if (node is OrderedList) "${node.markerStartNumber + index}." else "•", fontSize = 14.sp, color = appColors.primary, modifier = Modifier.widthIn(min = 23.dp).padding(end = 5.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) { item.children().forEach { MarkdownBlock(it, depth + 1) } }
             } }
         }
-        is BlockQuote -> Row(Modifier.fillMaxWidth().background(Color(0xFFF0F3E8), RoundedCornerShape(4.dp)).padding(9.dp)) {
-            Box(Modifier.width(3.dp).height(22.dp).background(Color(0xFFA4BA8C)))
+        is BlockQuote -> Row(Modifier.fillMaxWidth().background(appColors.surfaceContainer, RoundedCornerShape(4.dp)).padding(9.dp)) {
+            Box(Modifier.width(3.dp).height(22.dp).background(appColors.primary))
             Column(Modifier.padding(start = 9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { node.children().forEach { MarkdownBlock(it, depth + 1) } }
         }
-        is ThematicBreak -> HorizontalDivider(Modifier.padding(vertical = 4.dp), color = Color(0xFFDAE2D5))
+        is ThematicBreak -> HorizontalDivider(Modifier.padding(vertical = 4.dp), color = appColors.outlineVariant)
         is TableBlock -> MarkdownTable(node)
-        is HtmlBlock -> SelectionContainer { Text(node.literal, fontSize = 13.sp, color = MdInk) }
+        is HtmlBlock -> SelectionContainer { Text(node.literal, fontSize = 13.sp, color = appColors.onSurface) }
         else -> if (node.firstChild != null) node.children().forEach { MarkdownBlock(it, depth + 1) } else MarkdownInline(node)
     }
 }
@@ -73,25 +71,26 @@ private fun MarkdownInline(node: Node, style: TextStyle = TextStyle(fontSize = 1
     val uriHandler = LocalUriHandler.current
     val local = LocalFileClick.current
     val openFile by rememberUpdatedState(local)
-    val annotated = remember(node, local != null, uriHandler) {
-        buildAnnotatedString { inline(node, local != null) { url ->
+    val colors = appColors
+    val annotated = remember(node, local != null, uriHandler, colors) {
+        buildAnnotatedString { inline(node, local != null, colors) { url ->
             if (safeWebLink(url)) runCatching { uriHandler.openUri(url) } else openFile?.invoke(url)
         } }
     }
-    SelectionContainer { Text(annotated, modifier = modifier, style = style, color = MdInk) }
+    SelectionContainer { Text(annotated, modifier = modifier, style = style, color = appColors.onSurface) }
 }
 
-private fun AnnotatedString.Builder.inline(node: Node, files: Boolean, open: (String) -> Unit) {
-    fun nested() { node.children().forEach { inline(it, files, open) } }
+private fun AnnotatedString.Builder.inline(node: Node, files: Boolean, colors: ColorScheme, open: (String) -> Unit) {
+    fun nested() { node.children().forEach { inline(it, files, colors, open) } }
     when (node) {
         is org.commonmark.node.Text -> append(node.literal)
-        is Code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0xFFEAF0DF), color = MdGreen)) { append(node.literal) }
+        is Code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = colors.primaryContainer, color = colors.onPrimaryContainer)) { append(node.literal) }
         is StrongEmphasis -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { nested() }
         is Emphasis -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { nested() }
         is Strikethrough -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { nested() }
         is SoftLineBreak -> append('\n')
         is HardLineBreak -> append('\n')
-        is Link -> if (safeWebLink(node.destination) || (files && projectFileLink(node.destination))) withLink(LinkAnnotation.Clickable(node.destination, TextLinkStyles(style = SpanStyle(color = MdGreen, textDecoration = TextDecoration.Underline))) { open(node.destination) }) { nested() } else nested()
+        is Link -> if (safeWebLink(node.destination) || (files && projectFileLink(node.destination))) withLink(LinkAnnotation.Clickable(node.destination, TextLinkStyles(style = SpanStyle(color = colors.primary, textDecoration = TextDecoration.Underline))) { open(node.destination) }) { nested() } else nested()
         is Image -> { append("[图片："); nested(); append("]") }
         is HtmlInline -> append(node.literal)
         else -> nested()
@@ -120,9 +119,9 @@ private fun MarkdownTable(table: TableBlock) {
     val rows = table.children().flatMap { section -> section.children() }.filterIsInstance<TableRow>()
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
         Column {
-            rows.forEachIndexed { index, row -> Row(Modifier.background(if (index == 0) Color(0xFFE8EEDB) else if (index % 2 == 0) Color(0xFFF4F6F0) else Color.White)) {
+            rows.forEachIndexed { index, row -> Row(Modifier.background(if (index == 0) appColors.surfaceContainerHigh else if (index % 2 == 0) appColors.surfaceContainer else appColors.surfaceContainerLowest)) {
                 row.children().forEach { cell -> Box(Modifier.width(170.dp).padding(9.dp)) { MarkdownInline(cell, TextStyle(fontSize = 12.sp, lineHeight = 18.sp, fontWeight = if ((cell as? TableCell)?.isHeader == true) FontWeight.Bold else FontWeight.Normal)) } }
-            }; HorizontalDivider(color = Color(0xFFDAE2D5)) }
+            }; HorizontalDivider(color = appColors.outlineVariant) }
         }
     }
 }

@@ -19,7 +19,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -62,7 +61,7 @@ fun DraftImages(images: List<DraftImage>, source: String, enabled: Boolean, load
 @Composable
 private fun ImageTile(source: String, name: String, load: suspend () -> ByteArray) {
     var expanded by remember(source) { mutableStateOf(false) }
-    Surface(shape = RoundedCornerShape(9.dp), color = Color(0xFFE7ECDD), modifier = Modifier.size(96.dp).clickable { expanded = true }) {
+    Surface(shape = RoundedCornerShape(9.dp), color = appColors.surfaceContainerHigh, modifier = Modifier.size(96.dp).clickable { expanded = true }) {
         LoadedImage(source, name, 320, load, Modifier.fillMaxSize(), ContentScale.Crop)
     }
     if (expanded) ImageViewer(source, name, load) { expanded = false }
@@ -86,9 +85,9 @@ private fun LoadedImage(source: String, name: String, maxDimension: Int, load: s
     }
     Box(modifier, contentAlignment = Alignment.Center) {
         bitmap?.let { Image(it, name, Modifier.fillMaxSize(), contentScale = scale) }
-        if (bitmap == null && error.isEmpty()) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Color(0xFF50794B))
+        if (bitmap == null && error.isEmpty()) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = appColors.primary)
         if (error.isNotEmpty()) Column(Modifier.fillMaxSize().clickable { retry++ }.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Icon(Icons.Outlined.Refresh, "重试图片", tint = Color(0xFF8B6B54)); Text(if (maxDimension < 1000) "点击重试" else error, fontSize = 12.sp, color = Color(0xFF8B6B54))
+            Icon(Icons.Outlined.Refresh, "重试图片", tint = appColors.tertiary); Text(if (maxDimension < 1000) "点击重试" else error, fontSize = 12.sp, color = appColors.tertiary)
         }
     }
 }
@@ -98,12 +97,12 @@ internal fun ImageViewer(source: String, name: String, load: suspend () -> ByteA
     var zoom by remember(source) { mutableFloatStateOf(1f) }; var offset by remember(source) { mutableStateOf(Offset.Zero) }
     val transform = rememberTransformableState { factor, pan, _ -> zoom = (zoom * factor).coerceIn(1f, 6f); offset = if (zoom == 1f) Offset.Zero else offset + pan }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Column(Modifier.fillMaxSize().background(Color(0xFF13241D)).systemBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) { Text(name, color = Color.White, modifier = Modifier.weight(1f), maxLines = 1); IconButton(onClick = close) { Icon(Icons.Outlined.Close, "关闭图片", tint = Color.White) } }
+        Column(Modifier.fillMaxSize().background(appColors.surface).systemBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) { Text(name, color = appColors.onSurface, modifier = Modifier.weight(1f), maxLines = 1); IconButton(onClick = close) { Icon(Icons.Outlined.Close, "关闭图片", tint = appColors.onSurface) } }
             Box(Modifier.fillMaxWidth().weight(1f).transformable(transform).pointerInput(source) { detectTapGestures(onDoubleTap = { zoom = if (zoom > 1f) 1f else 2f; offset = Offset.Zero }) }) {
                 LoadedImage(source, name, 2048, load, Modifier.fillMaxSize().graphicsLayer(scaleX = zoom, scaleY = zoom, translationX = offset.x, translationY = offset.y))
             }
-            Text("双指缩放 · 拖动查看 · 双击切换大小", color = Color(0xFFBBCCBC), fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally).padding(12.dp))
+            Text("双指缩放 · 拖动查看 · 双击切换大小", color = appColors.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally).padding(12.dp))
         }
     }
 }

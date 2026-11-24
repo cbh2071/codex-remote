@@ -31,7 +31,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -47,11 +46,6 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-private val Forest = Color(0xFF173D31)
-private val Lime = Color(0xFFD2F56D)
-private val Paper = Color(0xFFF3F5EF)
-private val Ink = Color(0xFF1D2A23)
-
 class MainActivity : ComponentActivity() {
     private val repository get() = (application as RemoteApplication).repository
     private val incoming = mutableStateOf<ThreadKey?>(null)
@@ -62,7 +56,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); route(intent)
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme(primary = Forest, onPrimary = Color.White, secondary = Forest, secondaryContainer = Lime, onSecondaryContainer = Forest, background = Paper, surface = Paper, onSurface = Ink, outline = Color(0xFF819084)), typography = Typography(titleLarge = Typography().titleLarge.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold), headlineLarge = Typography().headlineLarge.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold))) {
+            val mode by repository.themeMode.collectAsState()
+            AppTheme(mode, window) {
                 Console(repository, incoming.value, { incoming.value = null }, scanned, { scanned = null }, { scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("扫描电脑桥接窗口的配对码").setBeepEnabled(false).setOrientationLocked(false)) }, {
                     if (repository.monitoring.value) { stopService(Intent(this, MonitorService::class.java)); repository.monitor(false) }
                     else if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -98,11 +93,11 @@ private fun Console(repo: Repository, incoming: ThreadKey?, consumeIncoming: () 
     LaunchedEffect(incoming) { if (incoming != null && hosts.containsKey(incoming.hostId)) { selected = incoming; screen = "thread"; consumeIncoming() } }
     LaunchedEffect(scanned) { if (scanned != null) { pairingText = scanned; manualPair = true; screen = "pair"; consumeScan() } }
     BackHandler(screen != "home") { back() }
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = Paper, topBar = {
+    Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = appColors.surface, topBar = {
         TopAppBar(expandedHeight = 56.dp, title = {
             if (screen == "thread") Column {
                 Text(selected?.let { histories[it]?.optString("title") }?.ifBlank { "会话" } ?: "会话", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(hosts[selected?.hostId]?.host?.name ?: "电脑已移除", fontSize = 11.sp, color = Forest, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(hosts[selected?.hostId]?.host?.name ?: "电脑已移除", fontSize = 11.sp, color = appColors.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             } else Text(if (screen == "home") "codex随行" else if (screen == "hosts") "我的电脑" else if (screen == "create") "新建会话" else "连接电脑", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         },
             navigationIcon = { if (screen != "home") IconButton(onClick = { back() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
@@ -114,7 +109,7 @@ private fun Console(repo: Repository, incoming: ThreadKey?, consumeIncoming: () 
                 }
                 if (hosts.isNotEmpty() && screen in listOf("home", "thread", "hosts")) IconButton(onClick = { repo.refreshAll() }) { Icon(Icons.Outlined.Refresh, "刷新") }
                 if (screen != "hosts") IconButton(onClick = { screen = "hosts" }) { Icon(Icons.Outlined.Dns, "电脑管理") }
-            }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Paper))
+            }, colors = TopAppBarDefaults.topAppBarColors(containerColor = appColors.surface))
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (if (screen == "home" && hosts.isEmpty()) "pair" else screen) {
@@ -172,7 +167,7 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
                 Text(if (inProject) selection.projectName else "项目", style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 val projectRows = groups[selection.projectHost to selection.project].orEmpty()
                 val subtitle = if (inProject) "${projectRows.size} 个会话" else "${visibleHosts.count { it.online }} / ${visibleHosts.size} 台电脑在线"
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Forest)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = appColors.primary)
             }
             if (followed.isNotEmpty()) FilledTonalIconButton(onClick = { create(selection.projectHost.ifEmpty { filter }) }) { Icon(Icons.Outlined.AddComment, "新建会话") }
         } }
@@ -186,15 +181,15 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
             val rows = groups.getValue(id)
             val name = projectName(id)
             Row(Modifier.fillMaxWidth().clickable { repo.selectHome(selection.copy(projectHost = id.first, project = id.second, projectName = name)) }.heightIn(min = 60.dp).padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.size(36.dp).background(Color(0xFFE0EBE4), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Folder, null, Modifier.size(20.dp), tint = Forest) }
+                Box(Modifier.size(36.dp).background(appColors.primaryContainer, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Folder, null, Modifier.size(20.dp), tint = appColors.primary) }
                 Column(Modifier.weight(1f)) {
                     Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                     if (visibleHosts.size > 1) Text(rows.first().first.host.name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text("${rows.size} 个会话", style = MaterialTheme.typography.bodySmall, color = Forest)
+                Text("${rows.size} 个会话", style = MaterialTheme.typography.bodySmall, color = appColors.primary)
                 Icon(Icons.Outlined.ChevronRight, null, Modifier.size(16.dp))
             }
-            HorizontalDivider(color = Color(0xFFDDE3DE))
+            HorizontalDivider(color = appColors.outlineVariant)
         }
         if (indexes.values.any { it.loading }) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         indexes.filterValues { it.error.isNotEmpty() }.forEach { (host, _) ->
@@ -204,7 +199,7 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
         visibleHosts.filter { !it.online && (!inProject || selection.projectHost == it.host.id) }.forEach { h -> item(key = "offline-${h.host.id}") {
             var expanded by rememberSaveable { mutableStateOf(false) }
             Column { Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp), tint = Color(0xFF896321))
+                Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp), tint = appColors.tertiary)
                 Text("${h.host.name} · 暂未连接", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                 Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "收起详情" else "连接详情")
             }; if (expanded) Text(h.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
@@ -227,14 +222,33 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
                         Text(t.optString("title", "未命名会话"), modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                         StatusPill(t.optString("status"))
                     }
-                    val summary = t.optString("summary"); if (summary.isNotEmpty()) Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Color(0xFF57665C), style = MaterialTheme.typography.bodySmall)
+                    val summary = t.optString("summary"); if (summary.isNotEmpty()) Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis, color = appColors.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 }
-            HorizontalDivider(color = Color(0xFFDDE3DE))
+            HorizontalDivider(color = appColors.outlineVariant)
         }
     }
 }
 
-@Composable private fun StatusPill(status: String) { val text = when(status) { "active", "inProgress" -> "运行中"; "needsInput" -> "待处理"; "failed" -> "失败"; "completed" -> "已完成"; "notLoaded" -> "历史"; "interrupted" -> "已中断"; else -> "空闲" }; Surface(color = if (status == "needsInput") Color(0xFFFFD8A5) else if (status == "active") Lime else Color(0xFFEDF0E8), shape = RoundedCornerShape(30.dp)) { Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), fontSize = 11.sp, color = Forest) } }
+@Composable private fun StatusPill(status: String) {
+    val text = when (status) {
+        "active", "inProgress" -> "运行中"
+        "needsInput" -> "待处理"
+        "failed" -> "失败"
+        "completed" -> "已完成"
+        "notLoaded" -> "历史"
+        "interrupted" -> "已中断"
+        else -> "空闲"
+    }
+    val background = when (status) {
+        "active", "inProgress" -> appColors.primaryContainer
+        "needsInput" -> appColors.tertiaryContainer
+        "failed" -> appColors.errorContainer
+        else -> appColors.surfaceContainerHigh
+    }
+    Surface(color = background, shape = RoundedCornerShape(30.dp)) {
+        Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), fontSize = 11.sp)
+    }
+}
 
 @Composable
 private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Boolean, monitor: () -> Unit, add: () -> Unit) {
@@ -245,6 +259,7 @@ private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Bo
     val context = LocalContext.current
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Button(onClick = add, modifier = Modifier.fillMaxWidth().height(48.dp)) { Icon(Icons.Outlined.Add, null); Text("连接电脑") } }
+        item { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { ThemeSetting(repo) } }
         item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("后台监控", modifier = Modifier.weight(1f)); Switch(checked = background, onCheckedChange = { monitor() }) } }
         item { TailnetSettings(repo) }
         item {
@@ -257,9 +272,9 @@ private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Bo
                 }
             }
         }
-        items(hosts, key = { it.host.id }) { h -> Card(colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(hosts, key = { it.host.id }) { h -> Card(colors = CardDefaults.cardColors(containerColor = appColors.surfaceContainerLowest)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Text(h.host.name, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f)); Switch(checked = h.host.followed, onCheckedChange = { repo.follow(h.host.id, it) }) }
-            Text(if (h.online) "在线 · ${h.threads.size} 个最近会话" else h.error, color = Forest); Text("${connectionKind(h.host.url)} · ${h.host.url}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            Text(if (h.online) "在线 · ${h.threads.size} 个最近会话" else h.error, color = appColors.primary); Text("${connectionKind(h.host.url)} · ${h.host.url}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
             Text("证书 ${h.host.fingerprint.take(16)}…", fontSize = 11.sp)
             TextButton(onClick = { connection = h.host }) { Icon(Icons.Outlined.Lan, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("修改连接地址") }
             Row { TextButton(onClick = { editing = h; name = h.host.name }) { Text("改名") }; TextButton(onClick = { removing = h }) { Text("移除") }; TextButton(onClick = { unlock = h }) { Text("核对未确认操作") } }
@@ -321,19 +336,19 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
         }
     }
     Column(Modifier.fillMaxSize()) {
-        if (host?.online != true || view != null && !live && !textOnlySend) Column(Modifier.fillMaxWidth().background(Color(0xFFFFE9CF)).padding(horizontal = 12.dp, vertical = 5.dp)) {
+        if (host?.online != true || view != null && !live && !textOnlySend) Column(Modifier.fillMaxWidth().background(appColors.tertiaryContainer).padding(horizontal = 12.dp, vertical = 5.dp)) {
             if (host?.online == true && view != null && !live && !busy) {
                 if (desktopTools) Text("当前会话暂不能接收文字，请刷新查看状态", fontSize = 12.sp)
                 else TextButton(onClick = { operate("activate") }, enabled = host.compatible) { Text("请求桌面接入会话") }
             }
-            if (host?.online != true) Text("电脑离线：仅保存草稿，不会排队发送", color = Color(0xFF9A4F17), fontSize = 11.sp)
+            if (host?.online != true) Text("电脑离线：仅保存草稿，不会排队发送", color = appColors.tertiary, fontSize = 11.sp)
         }
         ConversationTimeline(key, view, Modifier.weight(1f), latestRequest, { turn -> repo.markRead(key, turn) }, images = { message ->
             val instance = view?.optString("instanceId").orEmpty()
             ChatImages(message, "${key.hostId}/${key.threadId}/$instance") { id -> repo.image(key, instance, id) }
         }, edit = if (enabled) ({ item -> editTarget = JSONObject(item.toString()).put("instanceId", view?.optString("instanceId")) }) else null,
             reuse = if (textOnlySend) ({ text -> resend = text }) else null) { request -> RequestCard(request, enabled, { fields -> operate("decision", fields) }, { fields -> operate("answer", fields) }) }
-        Column(Modifier.fillMaxWidth().background(Paper).imePadding().padding(horizontal = 10.dp, vertical = 5.dp)) {
+        Column(Modifier.fillMaxWidth().background(appColors.surface).imePadding().padding(horizontal = 10.dp, vertical = 5.dp)) {
             LatestFilesButton(view)
             LatestThought(view, active.isNotEmpty(), enabled) { stopConfirm = true }
             DraftImages(selectedImages, "${key.hostId}/${key.threadId}/draft", !busy, { id -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repo.imageDrafts.bytes(key, id) } }) { id -> repo.imageDrafts.remove(key, setOf(id)); selectedImages = repo.imageDrafts.list(key) }
@@ -365,7 +380,7 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
 @Composable
 private fun RequestCard(request: JSONObject, enabled: Boolean, decision: (JSONObject) -> Unit, answer: (JSONObject) -> Unit) {
     val method = request.optString("method"); val params = request.optJSONObject("params") ?: JSONObject(); val requestId = request.optString("id")
-    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6BF))) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = appColors.tertiaryContainer)) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("需要你处理", style = MaterialTheme.typography.titleLarge)
         when(method) {
             "item/commandExecution/requestApproval", "item/fileChange/requestApproval" -> {

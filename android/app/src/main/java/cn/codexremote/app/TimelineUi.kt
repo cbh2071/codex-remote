@@ -17,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -31,9 +30,6 @@ import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-private val Green = Color(0xFF173D31)
-private val Muted = Color(0xFF647168)
-private val Red = Color(0xFFAC3529)
 
 @Composable
 fun ConversationTimeline(thread: ThreadKey, view: JSONObject?, modifier: Modifier = Modifier, latestRequest: Int = 0, read: (String) -> Unit = {}, images: @Composable (JSONObject) -> Unit = {}, edit: ((JSONObject) -> Unit)? = null, reuse: ((String) -> Unit)? = null, requestCard: @Composable (JSONObject) -> Unit) {
@@ -80,13 +76,13 @@ fun ConversationTimeline(thread: ThreadKey, view: JSONObject?, modifier: Modifie
                 } else ExecutionGroup(entry)
             }
             if (view == null) item(key = "loading") { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在读取原桌面会话…", fontSize = 12.sp) }
-            if (view?.optBoolean("hasOlder") == true) item(key = "older") { Text("这里只显示最近记录，完整历史保留在电脑。", fontSize = 11.sp, color = Muted) }
+            if (view?.optBoolean("hasOlder") == true) item(key = "older") { Text("这里只显示最近记录，完整历史保留在电脑。", fontSize = 11.sp, color = appColors.onSurfaceVariant) }
         }
         if (!atLatest && positioned) {
             SmallFloatingActionButton(onClick = {
                 following = true
                 scope.launch { autoScrolling = true; try { state.animateScrollToItem(0) } finally { autoScrolling = false } }
-            }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp).testTag("jump-to-latest"), containerColor = Green, contentColor = Color.White) {
+            }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp).testTag("jump-to-latest"), containerColor = appColors.primary, contentColor = appColors.onPrimary) {
                 Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.ArrowDownward, null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("回到最新", fontSize = 12.sp) }
             }
         }
@@ -100,17 +96,17 @@ private fun ConversationMessage(message: JSONObject, images: @Composable (JSONOb
     val text = message.optString("text")
     var detail by remember { mutableStateOf(false) }
     val longInput = user && (text.length > 600 || text.count { it == '\n' } > 7)
-    Column(Modifier.fillMaxWidth().padding(start = if (user) 20.dp else 0.dp).background(if (user) Green else Color.White, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 9.dp)) {
+    Column(Modifier.fillMaxWidth().padding(start = if (user) 20.dp else 0.dp).background(if (user) appColors.primaryContainer else appColors.surfaceContainerLowest, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 9.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (user) "你" else if (kind == "error") "执行错误" else "Codex", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = if (user) Color(0xFFD2F56D) else if (kind == "error") Red else Muted)
-            if (completedAnswer(message)) { Spacer(Modifier.width(8.dp)); CompletionDot("本轮已完成"); Text("已完成", color = Green, fontSize = 10.sp, modifier = Modifier.padding(start = 4.dp)) }
+            Text(if (user) "你" else if (kind == "error") "执行错误" else "Codex", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = if (user) appColors.onPrimaryContainer else if (kind == "error") appColors.error else appColors.onSurfaceVariant)
+            if (completedAnswer(message)) { Spacer(Modifier.width(8.dp)); CompletionDot("本轮已完成"); Text("已完成", color = appColors.primary, fontSize = 10.sp, modifier = Modifier.padding(start = 4.dp)) }
             val target = message.optJSONObject("editTarget")
             if (user && target != null && edit != null && target.optBoolean("allowed")) {
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { edit(target) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Outlined.Edit, "编辑这条消息", tint = Color.White, modifier = Modifier.size(16.dp)) }
+                IconButton(onClick = { edit(target) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Outlined.Edit, "编辑这条消息", tint = appColors.onPrimaryContainer, modifier = Modifier.size(16.dp)) }
             } else if (user && reuse != null && text.isNotBlank() && !message.optBoolean("truncated") && message.optJSONArray("images").let { it == null || it.length() == 0 }) {
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { reuse(text) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Outlined.Edit, "编辑后作为新消息发送", tint = Color.White, modifier = Modifier.size(16.dp)) }
+                IconButton(onClick = { reuse(text) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Outlined.Edit, "编辑后作为新消息发送", tint = appColors.onPrimaryContainer, modifier = Modifier.size(16.dp)) }
             }
         }
         if (!user && kind != "error") {
@@ -118,31 +114,31 @@ private fun ConversationMessage(message: JSONObject, images: @Composable (JSONOb
             val open: ((String) -> Unit)? = if (kind == "agentMessage" && show != null) ({ link -> show(message.optString("id"), link) }) else null
             CompositionLocalProvider(LocalFileClick provides open) { MarkdownText(text, Modifier.padding(top = 5.dp)) }
         }
-        else SelectionContainer { Text(text, fontSize = 14.sp, lineHeight = 21.sp, color = if (user) Color.White else Color(0xFF1D2A23), modifier = Modifier.padding(top = 4.dp), maxLines = if (longInput) 7 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis) }
-        if (longInput) Text("查看完整消息", fontSize = 11.sp, color = Color(0xFFD2F56D), modifier = Modifier.clickable { detail = true }.padding(top = 5.dp))
+        else SelectionContainer { Text(text, fontSize = 14.sp, lineHeight = 21.sp, color = if (user) appColors.onPrimaryContainer else appColors.onSurface, modifier = Modifier.padding(top = 4.dp), maxLines = if (longInput) 7 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis) }
+        if (longInput) Text("查看完整消息", fontSize = 11.sp, color = appColors.onPrimaryContainer, modifier = Modifier.clickable { detail = true }.padding(top = 5.dp))
         images(message)
     }
     if (detail) TextDetail("你的消息", text) { detail = false }
 }
 
 @Composable
-fun CompletionDot(description: String) { Box(Modifier.size(6.dp).background(Green, RoundedCornerShape(50)).semantics { contentDescription = description }.testTag("completion-dot")) }
+fun CompletionDot(description: String) { Box(Modifier.size(6.dp).background(appColors.primary, RoundedCornerShape(50)).semantics { contentDescription = description }.testTag("completion-dot")) }
 
 @Composable
 private fun ExecutionGroup(entry: TimelineEntry) {
     var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
     var all by remember { mutableStateOf(false) }
     val latest = executionView(entry.executions.last())
-    Surface(color = Color(0xFFE8EDE5), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = appColors.surfaceContainerHigh, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
         Column {
             Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 11.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Terminal, null, Modifier.size(17.dp), tint = Green)
+                Icon(Icons.Outlined.Terminal, null, Modifier.size(17.dp), tint = appColors.primary)
                 Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                    Text("执行记录 · ${entry.executions.size} 项", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Green)
-                    Text(latest.command.ifBlank { latest.title }.replace('\n', ' '), maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Muted)
+                    Text("执行记录 · ${entry.executions.size} 项", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = appColors.primary)
+                    Text(latest.command.ifBlank { latest.title }.replace('\n', ' '), maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = appColors.onSurfaceVariant)
                 }
-                Text(latest.status, fontSize = 10.sp, color = if (latest.failed) Red else Muted)
-                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, "展开执行记录", Modifier.size(18.dp), tint = Green)
+                Text(latest.status, fontSize = 10.sp, color = if (latest.failed) appColors.error else appColors.onSurfaceVariant)
+                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, "展开执行记录", Modifier.size(18.dp), tint = appColors.primary)
             }
             if (expanded) {
                 entry.executions.takeLast(5).forEach { message -> key(message.optString("id")) { ExecutionItem(message) } }
@@ -162,16 +158,16 @@ private fun ExecutionItem(message: JSONObject) {
     val data = executionView(message)
     var command by remember { mutableStateOf(false) }
     var output by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp).background(Color.White, RoundedCornerShape(8.dp)).padding(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) { Text(data.title, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); Text(data.status, fontSize = 10.sp, color = if (data.failed) Red else Muted) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp).background(appColors.surfaceContainerLowest, RoundedCornerShape(8.dp)).padding(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Text(data.title, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); Text(data.status, fontSize = 10.sp, color = if (data.failed) appColors.error else appColors.onSurfaceVariant) }
         if (data.command.isNotBlank()) {
-            Text(data.command, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Color(0xFFD8EAD1), modifier = Modifier.fillMaxWidth().padding(top = 6.dp).background(Green, RoundedCornerShape(5.dp)).clickable { command = true }.padding(8.dp))
+            Text(data.command, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = appColors.onPrimaryContainer, modifier = Modifier.fillMaxWidth().padding(top = 6.dp).background(appColors.primaryContainer, RoundedCornerShape(5.dp)).clickable { command = true }.padding(8.dp))
         }
         val label = if (!data.structured && message.optString("kind") == "commandExecution") "原始记录（电脑端待更新）" else if (data.command.isNotEmpty()) "执行结果" else "详情 / 结果"
         Row(Modifier.fillMaxWidth().clickable { output = true }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Subject, null, Modifier.size(14.dp), tint = Muted)
-            Text("$label · ${if (data.output.isEmpty()) "暂无输出" else "${data.output.lineSequence().count()} 行"}", fontSize = 11.sp, color = if (data.failed) Red else Muted, modifier = Modifier.weight(1f).padding(start = 5.dp))
-            Icon(Icons.Outlined.OpenInFull, "查看执行结果", Modifier.size(14.dp), tint = Muted)
+            Icon(Icons.Outlined.Subject, null, Modifier.size(14.dp), tint = appColors.onSurfaceVariant)
+            Text("$label · ${if (data.output.isEmpty()) "暂无输出" else "${data.output.lineSequence().count()} 行"}", fontSize = 11.sp, color = if (data.failed) appColors.error else appColors.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 5.dp))
+            Icon(Icons.Outlined.OpenInFull, "查看执行结果", Modifier.size(14.dp), tint = appColors.onSurfaceVariant)
         }
     }
     if (command) TextDetail("命令", data.command) { command = false }
@@ -183,8 +179,8 @@ fun LatestThought(view: JSONObject?, active: Boolean, enabled: Boolean, stop: ()
     val thought = latestThought(view)
     var detail by remember { mutableStateOf(false) }
     if (thought.isNotBlank() || active) Row(Modifier.fillMaxWidth().heightIn(min = 34.dp).testTag("latest-thought"), verticalAlignment = Alignment.CenterVertically) {
-        if (active) CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.5.dp, color = Green) else Icon(Icons.Outlined.Check, null, Modifier.size(13.dp), tint = Muted)
-        Text(thoughtPreview(thought).ifBlank { "任务运行中…" }, fontSize = 11.sp, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 7.dp).clickable(enabled = thought.isNotEmpty()) { detail = true })
+        if (active) CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.5.dp, color = appColors.primary) else Icon(Icons.Outlined.Check, null, Modifier.size(13.dp), tint = appColors.onSurfaceVariant)
+        Text(thoughtPreview(thought).ifBlank { "任务运行中…" }, fontSize = 11.sp, color = appColors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 7.dp).clickable(enabled = thought.isNotEmpty()) { detail = true })
         if (active) IconButton(onClick = stop, enabled = enabled, modifier = Modifier.size(34.dp)) { Icon(Icons.Outlined.StopCircle, "中断此轮", Modifier.size(19.dp)) }
     }
     if (detail) TextDetail(if (active) "正在思考 · 最新摘要" else "最新思考摘要", thought, monospace = false) { detail = false }
