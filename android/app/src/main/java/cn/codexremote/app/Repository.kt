@@ -60,21 +60,65 @@ class Repository(private val context: Context) {
     private val signals = ConcurrentHashMap<ThreadKey, JSONObject>()
     private val operationGate = OperationGate()
     private fun ownsApi(id: String, api: HostApi) = apis[id] === api && states.value[id]?.host?.url == api.host.url
-    private var visible = false
+    internal val inForeground = MutableStateFlow(false)
+    private var idleTimeout: Job? = null
+    private val indexes = ConcurrentHashMap<String, ProjectIndex>()
+    private val cursors = ConcurrentHashMap<String, Pair<String, Long>>()
+    internal fun cachedIndex(id: String) = indexes[id] ?: ProjectIndex()
+    internal fun saveIndex(host: HostState, index: ProjectIndex) {
+        val snapshot = index.snapshot()
+        synchronized(indexes) {
+            val current = states.value[host.host.id] ?: return
+            if (current.host.fingerprint != host.host.fingerprint || current.instance != host.instance) return
+            if (indexes[host.host.id]?.snapshot() != snapshot) store.put("project-index-${host.host.id}", snapshot)
+            indexes[host.host.id] = index
+        }
+    }
     var notify: ((Notice) -> Unit)? = null
     init {
         try {
             states.value = store.hosts().associate { it.id to HostState(it) }
+            for (id in states.value.keys) {
+                runCatching { restoreIndex(store.get("project-index-$id", "{}")) }.getOrNull()?.let { indexes[id] = it }
+            }
             homeSelection.value = HomeSelection.parse(store.get("home-selection", "{}")).let { if (it.hostId.isEmpty() || states.value[it.hostId]?.host?.followed == true) it else it.copy(hostId = "") }
             unreadCompletions.value = completionMarkers(store.get("unread-completions", "[]")).filterKeys { states.value.containsKey(it.hostId) }
             readCompletions = completionMarkers(store.get("read-completions", "[]")).filterKeys { states.value.containsKey(it.hostId) }
         }
         catch (_: Exception) { message.value = "手机安全存储无法解密。为保护信任关系，请清除应用数据后重新配对。" }
     }
-    fun foreground(value: Boolean) { visible = value; reconcile() }
-    fun monitor(value: Boolean) { monitoring.value = value; reconcile() }
+    @Synchronized fun foreground(value: Boolean) {
+        if (inForeground.value == value) return
+        inForeground.value = value
+        idleTimeout?.cancel()
+        idleTimeout = null
+        if (!value && !monitoring.value) {
+            val timer = scope.launch(start = CoroutineStart.LAZY) {
+                delay(30_000)
+                synchronized(this@Repository) {
+                    if (idleTimeout === coroutineContext[Job]) {
+                        idleTimeout = null
+                        reconcile()
+                    }
+                }
+            }
+            idleTimeout = timer
+            timer.start()
+        }
+        reconcile()
+        if (value) for (key in selected.filter { states.value[it.hostId]?.online == true }) scope.launch { load(key, fresh = true) }
+    }
+    @Synchronized fun monitor(value: Boolean) {
+        monitoring.value = value
+        idleTimeout?.cancel()
+        idleTimeout = null
+        reconcile()
+    }
     @Synchronized private fun reconcile() {
-        val wanted = states.value.values.filter { it.host.followed && (visible || monitoring.value) }.map { it.host.id }.toSet()
+        val idle = !inForeground.value && !monitoring.value && idleTimeout == null
+        tailnet.idle = idle
+        if (idle) scope.launch { tailnet.closeIfIdle() }
+        val wanted = states.value.values.filter { it.host.followed && !idle }.map { it.host.id }.toSet()
         jobs.keys.filter { it !in wanted }.forEach { jobs.remove(it)?.cancel(); apis.remove(it)?.close(); states.update { old -> old[it]?.let { s -> old + (it to s.copy(online = false)) } ?: old } }
         wanted.filter { jobs[it]?.isActive != true }.forEach { id -> jobs[id] = scope.launch { connect(id) } }
     }
@@ -82,7 +126,12 @@ class Repository(private val context: Context) {
     @Synchronized fun rename(id: String, value: String) { if (value.isBlank() || value.length > 60) return; states.update { old -> old + (id to old.getValue(id).copy(host = old.getValue(id).host.copy(name = value.trim()))) }; save() }
     @Synchronized fun selectHome(value: HomeSelection) { require(value.hostId.isEmpty() || states.value[value.hostId]?.host?.followed == true); store.put("home-selection", value.json()); homeSelection.value = value }
     @Synchronized fun follow(id: String, value: Boolean) { states.update { old -> old + (id to old.getValue(id).copy(host = old.getValue(id).host.copy(followed = value))) }; if (!value) selectHome(homeSelection.value.without(id)); save(); reconcile() }
-    @Synchronized fun remove(id: String) { jobs.remove(id)?.cancel(); apis.remove(id)?.close(); states.update { it - id }; histories.update { all -> all.filterKeys { it.hostId != id } }; selected.removeAll { it.hostId == id }; signals.keys.removeAll { it.hostId == id }; selectHome(homeSelection.value.without(id)); unreadCompletions.update { all -> all.filterKeys { it.hostId != id } }; readCompletions = readCompletions.filterKeys { it.hostId != id }; store.put("read-completions", completionMarkersJson(readCompletions)); saveUnread(); store.put("pending-$id", "{}"); save() }
+    @Synchronized fun remove(id: String) {
+        jobs.remove(id)?.cancel(); apis.remove(id)?.close(); states.update { it - id }
+        synchronized(indexes) { indexes.remove(id); store.remove("project-index-$id") }
+        cursors.remove(id)
+        histories.update { all -> all.filterKeys { it.hostId != id } }; selected.removeAll { it.hostId == id }; signals.keys.removeAll { it.hostId == id }; selectHome(homeSelection.value.without(id)); unreadCompletions.update { all -> all.filterKeys { it.hostId != id } }; readCompletions = readCompletions.filterKeys { it.hostId != id }; store.put("read-completions", completionMarkersJson(readCompletions)); saveUnread(); store.put("pending-$id", "{}"); save()
+    }
     @Synchronized private fun saveUnread() = store.put("unread-completions", completionMarkersJson(unreadCompletions.value))
     @Synchronized fun markRead(key: ThreadKey, turnId: String) {
         if (turnId.isEmpty() || !states.value.containsKey(key.hostId)) return
@@ -156,19 +205,27 @@ class Repository(private val context: Context) {
         }
     }
     private suspend fun connect(id: String) {
-        var backoff = 1000L; var disconnectedAt = 0L; var warned = false; var sequence = 0L; var instance = ""
+        val owner = currentCoroutineContext()[Job]
+        val previousCursor = cursors[id]
+        var backoff = 1000L; var disconnectedAt = 0L; var warned = false
+        var sequence = previousCursor?.second ?: 0L; var instance = previousCursor?.first.orEmpty()
         while (currentCoroutineContext().isActive && states.value.containsKey(id)) {
             val host = states.value.getValue(id).host
-            val api = hostApi(host); apis.put(id, api)?.close()
+            val api = hostApi(host)
+            synchronized(this) {
+                if (jobs[id] !== owner) { api.close(); return }
+                apis.put(id, api)?.close()
+            }
             try {
                 val status = api.request("/api/v1/status")
                 if (!ownsApi(id, api)) throw CancellationException("连接地址已更改")
                 require(status.getString("hostId") == id) { "电脑身份不匹配" }
                 val next = status.getString("instanceId")
-                if (next != instance) { instance = next; sequence = 0; histories.update { all -> all.filterKeys { it.hostId != id } } }
+                if (next != instance) { instance = next; sequence = 0 }
+                if (states.value[id]?.instance != next) histories.update { all -> all.filterKeys { it.hostId != id } }
                 states.update { old -> old[id]?.let { old + (id to it.copy(online = status.optBoolean("desktopConnected"), compatible = status.optBoolean("compatible"), instance = instance, error = status.optString("error"))) } ?: old }
-                refresh(id, api); reconcilePending(id, api)
-                for (key in selected.filter { it.hostId == id }) load(key)
+                refresh(id, api, status); reconcilePending(id, api)
+                if (inForeground.value) for (key in selected.filter { it.hostId == id }) load(key, fresh = true)
                 backoff = 1000; disconnectedAt = 0; warned = false
                 suspendCancellableCoroutine<Unit> { continuation ->
                     val socket = api.events(instance, sequence, object : WebSocketListener() {
@@ -180,14 +237,14 @@ class Repository(private val context: Context) {
                                     instance = eventInstance; sequence = event.optLong("sequence", 0)
                                     states.update { old -> old[id]?.let { old + (id to it.copy(instance = instance)) } ?: old }
                                     histories.update { all -> all.filterKeys { it.hostId != id } }
-                                    scope.launch { refresh(id, api); for (key in selected.filter { it.hostId == id }) load(key) }
+                                    scope.launch { refresh(id, api); if (inForeground.value) for (key in selected.filter { it.hostId == id }) load(key) }
                                 } else {
                                     sequence = maxOf(sequence, event.optLong("sequence", 0))
                                     when (event.optString("type")) {
                                         "catalog" -> {
                                             val data = event.getJSONObject("data")
                                             updateCatalog(id, data.optJSONArray("threads") ?: JSONArray())
-                                            if (data.optBoolean("desktopTools")) for (key in selected.filter { it.hostId == id }) scope.launch { load(key, fresh = true) }
+                                            if (inForeground.value && data.optBoolean("desktopTools")) for (key in selected.filter { it.hostId == id }) scope.launch { load(key, fresh = true) }
                                             if (data.has("desktopConnected")) states.update { all -> all[id]?.let { all + (id to it.copy(online = data.optBoolean("desktopConnected"), compatible = data.optBoolean("compatible"), error = data.optString("error"))) } ?: all }
                                         }
                                         "catalogInvalidated" -> scope.launch { refresh(id, api) }
@@ -197,10 +254,11 @@ class Repository(private val context: Context) {
                                             if (taskStatus == "completed" && (previous?.optString("status") != "completed" || previous.optString("turnId") != data.optString("turnId"))) completed(key, data.optString("turnId"))
                                             states.update { all -> all[id]?.let { h -> all + (id to h.copy(threads = h.threads.map { t -> if (t.optString("id") == key.threadId) JSONObject(t.toString()).put("status", taskStatus).put("pendingCount", data.optInt("pendingCount")) else t })) } ?: all }
                                             if (monitoring.value && shouldNotify(previous?.optString("status"), taskStatus, previous?.optString("requestIds").orEmpty(), data.optString("requestIds"))) notify?.invoke(Notice(id, key.threadId, host.name, when(taskStatus) { "needsInput" -> "任务需要你处理"; "failed" -> "任务执行失败"; "interrupted" -> "任务已中断"; else -> "任务已完成" }))
-                                            if (key in selected) scope.launch { load(key) }
+                                            if (inForeground.value && key in selected) scope.launch { load(key) }
                                         }
                                     }
                                 }
+                                synchronized(this@Repository) { if (ownsApi(id, api)) cursors[id] = instance to sequence }
                             } catch (_: Exception) { webSocket.cancel() }
                         }
                         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { if (continuation.isActive) continuation.resume(Unit) }
@@ -221,9 +279,9 @@ class Repository(private val context: Context) {
         }
     }
     private fun updateCatalog(id: String, threads: JSONArray) { states.update { all -> all[id]?.let { all + (id to it.copy(threads = threads.objects(), catalogLoaded = true, catalogError = null)) } ?: all } }
-    private suspend fun refresh(id: String, api: HostApi) {
+    private suspend fun refresh(id: String, api: HostApi, knownStatus: JSONObject? = null) {
         try {
-            val status = api.request("/api/v1/status"); require(status.getString("hostId") == id)
+            val status = knownStatus ?: api.request("/api/v1/status"); require(status.getString("hostId") == id)
             if (!ownsApi(id, api)) return
             states.update { all -> all[id]?.let { all + (id to it.copy(online = status.optBoolean("desktopConnected"), compatible = status.optBoolean("compatible"), instance = status.getString("instanceId"), error = status.optString("error"))) } ?: all }
             val result = api.request("/api/v1/threads"); require(result.getString("hostId") == id); if (ownsApi(id, api)) updateCatalog(id, result.getJSONArray("threads"))
@@ -257,7 +315,7 @@ class Repository(private val context: Context) {
     private fun readView(key: ThreadKey, fresh: Boolean) {
         val api = apis[key.hostId] ?: return
         try { val view = api.request("/api/v1/threads/${key.threadId}" + if (fresh) "?fresh=true" else ""); if (ownsApi(key.hostId, api) && view.optString("instanceId") == states.value[key.hostId]?.instance) histories.update { it + (key to view) } }
-        catch (e: Exception) { if (e is CancellationException) throw e; message.value = e.message ?: "读取失败" }
+        catch (e: Exception) { if (e is CancellationException) throw e; if (ownsApi(key.hostId, api) && inForeground.value) message.value = e.message ?: "读取失败" }
     }
     suspend fun historyPage(id: String, instance: String, cursor: String): JSONObject = withContext(Dispatchers.IO) {
         val api = apis[id] ?: error("电脑未连接")

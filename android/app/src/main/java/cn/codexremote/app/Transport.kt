@@ -64,6 +64,7 @@ class SecureStore(context: Context) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
         return cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8)
     }
+    @Synchronized fun remove(name: String) { prefs.edit().remove(name).apply() }
     fun hosts(): List<Host> = JSONArray(get("hosts", "[]")).objects().map(Host::from)
     fun save(hosts: List<Host>) = put("hosts", JSONArray(hosts.map(Host::json)).toString())
 }

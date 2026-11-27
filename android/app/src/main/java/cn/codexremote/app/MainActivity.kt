@@ -191,7 +191,9 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
             }
             HorizontalDivider(color = appColors.outlineVariant)
         }
-        if (indexes.values.any { it.loading }) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        if (groups.isEmpty() && visibleHosts.any { h -> indexes[h.host.id]?.loading == true ||
+                (!h.online && h.error == "等待连接") || (h.online && !h.catalogLoaded && h.catalogError == null) })
+            item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         indexes.filterValues { it.error.isNotEmpty() }.forEach { (host, _) ->
             item { TextButton(onClick = { retry++ }) { Text("${visibleHosts.first { it.host.id == host }.host.name} · 历史加载失败，重试") } }
         }
@@ -200,7 +202,8 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
             var expanded by rememberSaveable { mutableStateOf(false) }
             Column { Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp), tint = appColors.tertiary)
-                Text("${h.host.name} · 暂未连接", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                val description = if (indexes[h.host.id]?.threads?.isNotEmpty() == true) "显示上次同步的列表" else "暂未连接"
+                Text("${h.host.name} · $description", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                 Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "收起详情" else "连接详情")
             }; if (expanded) Text(h.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
         } }
@@ -220,7 +223,7 @@ private fun HomeScreen(hosts: List<HostState>, repo: Repository, manage: () -> U
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (unread.containsKey(ThreadKey(h.host.id, t.optString("id")))) CompletionDot("有新的已完成回复")
                         Text(t.optString("title", "未命名会话"), modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                        StatusPill(t.optString("status"))
+                        if (h.online && t.has("status")) StatusPill(t.optString("status"))
                     }
                     val summary = t.optString("summary"); if (summary.isNotEmpty()) Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis, color = appColors.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 }

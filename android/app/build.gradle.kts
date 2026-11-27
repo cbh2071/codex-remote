@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "cn.codexremote.app"
     compileSdk = 35
-    defaultConfig { applicationId = "cn.codexremote.app"; minSdk = 29; targetSdk = 35; versionCode = 14; versionName = "0.1.13"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "cn.codexremote.app"; minSdk = 29; targetSdk = 35; versionCode = 15; versionName = "0.1.14"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testBuildType = providers.gradleProperty("androidTestBuildType").orElse("release").get()
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

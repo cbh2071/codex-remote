@@ -35,13 +35,20 @@ internal class EmbeddedTailnet(context: Context) {
     private var handle = -1
     private var endpoint: Endpoint? = null
     val enabled get() = prefs.getBoolean("enabled", false)
+    @Volatile var idle = false
     private val local = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).followRedirects(false)
         .followSslRedirects(false).retryOnConnectionFailure(false).build()
     internal class Endpoint(val port: Int, val proxyPassword: String, val localPassword: String)
 
     @Synchronized fun setEnabled(value: Boolean) {
         check(prefs.edit().putBoolean("enabled", value).commit())
-        if (!value && handle >= 0) {
+        if (!value) closeNode()
+    }
+
+    @Synchronized fun closeIfIdle() { if (idle) closeNode() }
+
+    private fun closeNode() {
+        if (handle >= 0) {
             endpoint = null
             library.TsnetClose(handle)
             handle = -1
@@ -51,6 +58,7 @@ internal class EmbeddedTailnet(context: Context) {
 
     @Synchronized private fun start(): Endpoint {
         if (!enabled) throw IOException("内置 Tailscale 已关闭")
+        if (idle) throw IOException("内置 Tailscale 已休眠")
         endpoint?.let { return it }
         val path = directory.apply { mkdirs() }.absolutePath
         val api = try { library } catch (e: LinkageError) { throw IOException("当前手机无法载入内置 Tailscale", e) }

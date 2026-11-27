@@ -26,11 +26,13 @@ internal fun TailnetSettings(repo: Repository, connected: () -> Unit = {}) {
     var feedback by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    LaunchedEffect(enabled, retry) {
+    val foreground by repo.inForeground.collectAsState()
+    LaunchedEffect(enabled, retry, foreground) {
+        if (!foreground) return@LaunchedEffect
         loginUrl = ""
         computers = null
         if (!enabled) return@LaunchedEffect
-        status = "正在连接"
+        if (status.isEmpty()) status = "正在连接"
         var requested = false
         while (true) {
             try {

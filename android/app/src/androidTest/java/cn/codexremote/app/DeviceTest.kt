@@ -10,6 +10,45 @@ import org.junit.Test
 import java.io.File
 
 class DeviceTest {
+    @Test fun backgroundGraceAndMonitor() = runBlocking {
+        val file = InstrumentationRegistry.getArguments().getString("pairingFile")
+        org.junit.Assume.assumeNotNull(file)
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val isolated = object : android.content.ContextWrapper(target) {
+            override fun getSharedPreferences(name: String, mode: Int) =
+                target.getSharedPreferences("lifecycle-test-$name", mode)
+        }
+        val repo = Repository(isolated)
+        val code = JSONArray(File(requireNotNull(file)).readText()).getJSONObject(0)
+        val id = code.getString("hostId")
+        try {
+            repo.foreground(true)
+            repo.pair(code.toString())
+            withTimeout(45_000) { while (repo.states.value[id]?.catalogLoaded != true) delay(100) }
+            val instance = repo.states.value.getValue(id).instance
+            val rows = repo.historyPage(id, instance, "").getJSONArray("threads").objects()
+            assertTrue(rows.isNotEmpty())
+            repo.saveIndex(repo.states.value.getValue(id), ProjectIndex(threads = rows))
+            val cold = Repository(isolated)
+            assertFalse(cold.states.value.getValue(id).online)
+            assertEquals(rows.maxBy { it.optLong("updatedAt") }.getString("id"), cold.cachedIndex(id).threads.first().getString("id"))
+            repo.foreground(false)
+            delay(1000)
+            assertFalse(repo.tailnet.idle)
+            repo.foreground(true)
+            repo.historyPage(id, instance, "")
+            repo.foreground(false)
+            withTimeout(40_000) { while (!repo.tailnet.idle) delay(150) }
+            assertFalse(repo.states.value.getValue(id).online)
+            assertTrue(runCatching { repo.historyPage(id, instance, "") }.isFailure)
+            repo.monitor(true)
+            withTimeout(45_000) {
+                while (runCatching { repo.historyPage(id, instance, "") }.isFailure) delay(200)
+            }
+            repo.monitor(false)
+            assertTrue(repo.tailnet.idle)
+        } finally { repo.remove(id); repo.monitor(false) }
+    }
     @Test fun launchAndNativeKeystore() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
