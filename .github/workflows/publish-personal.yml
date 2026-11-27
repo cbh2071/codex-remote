@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.repository == 'cbh2071/codex-remote' && github.event.repository.private
+    if: github.repository == 'cbh2071/codex-remote'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
