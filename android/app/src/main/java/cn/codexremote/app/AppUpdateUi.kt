@@ -12,7 +12,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.CancellationException
@@ -25,8 +24,6 @@ internal fun AppUpdateDialog(repo: Repository, dismiss: () -> Unit) {
     val progress by downloadProgress.collectAsState()
     var version by rememberSaveable { mutableStateOf<String?>(null) }
     var message by rememberSaveable { mutableStateOf<String?>(null) }
-    var editingToken by remember { mutableStateOf(false) }
-    var token by remember { mutableStateOf("") }
     var attempt by remember { mutableIntStateOf(0) }
 
     fun openInstaller() {
@@ -78,11 +75,7 @@ internal fun AppUpdateDialog(repo: Repository, dismiss: () -> Unit) {
         title = { Text("应用更新") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (editingToken) {
-                    OutlinedTextField(value = token, onValueChange = { token = it }, singleLine = true,
-                        label = { Text("GitHub 只读令牌") }, visualTransformation = PasswordVisualTransformation())
-                    Text("仅需 cbh2071/codex-remote 的 Contents 读取权限。留空保存可清除已存令牌。")
-                } else Text(message ?: when {
+                Text(message ?: when {
                     version != null -> "已下载 ${version}，请在 Android 安装界面确认。"
                     progress >= 0f -> "正在下载更新包 · ${(progress * 100).toInt()}%"
                     else -> "正在检查更新…"
@@ -94,21 +87,12 @@ internal fun AppUpdateDialog(repo: Repository, dismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            if (editingToken) TextButton(onClick = {
-                repo.store.put(UPDATE_TOKEN, token.trim())
-                token = ""
-                editingToken = false
-                message = null
-                downloadProgress.value = -1f
-                attempt++
-            }) { Text("保存并检查") }
-            else if (version != null) TextButton(onClick = { install() }) { Text("安装更新") }
+            if (version != null) TextButton(onClick = { install() }) { Text("安装更新") }
             else TextButton(onClick = dismiss) { Text(if (message == null) "取消" else "关闭") }
         },
         dismissButton = {
             if (version != null) TextButton(onClick = dismiss) { Text("关闭") }
-            else if (!editingToken && message != null) TextButton(onClick = { editingToken = true }) { Text("配置仓库令牌") }
-            else if (editingToken) TextButton(onClick = { token = ""; editingToken = false }) { Text("取消") }
+            else if (message != null) TextButton(onClick = { message = null; downloadProgress.value = -1f; attempt++ }) { Text("重新检查") }
         }
     )
 }

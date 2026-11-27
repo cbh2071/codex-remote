@@ -175,13 +175,13 @@ private fun ExecutionItem(message: JSONObject) {
 }
 
 @Composable
-fun LatestThought(view: JSONObject?, active: Boolean, enabled: Boolean, stop: () -> Unit) {
+fun LatestThought(view: JSONObject?, active: Boolean, enabled: Boolean, canStop: Boolean = true, stop: () -> Unit) {
     val thought = latestThought(view)
     var detail by remember { mutableStateOf(false) }
     if (thought.isNotBlank() || active) Row(Modifier.fillMaxWidth().heightIn(min = 34.dp).testTag("latest-thought"), verticalAlignment = Alignment.CenterVertically) {
         if (active) CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.5.dp, color = appColors.primary) else Icon(Icons.Outlined.Check, null, Modifier.size(13.dp), tint = appColors.onSurfaceVariant)
         Text(thoughtPreview(thought).ifBlank { "任务运行中…" }, fontSize = 11.sp, color = appColors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 7.dp).clickable(enabled = thought.isNotEmpty()) { detail = true })
-        if (active) IconButton(onClick = stop, enabled = enabled, modifier = Modifier.size(34.dp)) { Icon(Icons.Outlined.StopCircle, "中断此轮", Modifier.size(19.dp)) }
+        if (active && canStop) TextButton(onClick = stop, enabled = enabled) { Icon(Icons.Outlined.StopCircle, null, Modifier.size(19.dp)); Text("停止") }
     }
     if (detail) TextDetail(if (active) "正在思考 · 最新摘要" else "最新思考摘要", thought, monospace = false) { detail = false }
 }

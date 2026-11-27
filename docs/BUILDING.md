@@ -50,7 +50,7 @@ gradle -p android assembleRelease testReleaseUnitTest lintRelease --console=plai
 
 每次递增 Android `versionCode` 和 `versionName`，推送源码和 `v<versionName>` 标签。在本仓库创建 Release，将 APK 命名为 `codex-suixing-preview-<versionCode>-<versionName>.apk`，一起上传 Windows ZIP 和 `SHA256SUMS.txt`。手机选择版本码最大的已发布匹配包，支持预发布，跳过草稿。更新包需通过大小、包名、版本和签名校验。0.1.11 的桥接更新入口可用 `tools/publish-android-update.mjs` 向旧手机分发一次过渡 APK；也可直接从 Releases 覆盖安装。
 
-也可用 SSH 上传到自己的私有仓库：在包含 `publish-personal.yml` 的独立 checkout 中，从包含源码标签的提交新建 `release-upload/v<版本>` 分支，将上述三个文件放入 `bundle/`，用 `git add -f bundle/` 提交后推送该分支。校验清单用小写 SHA-256，按 Windows ZIP、APK 顺序各写一行。工作流核对标签、证书和附件哈希后创建预发布。确认三个附件均已发布后可删除临时上传分支，安装包不会进入 `main`。
+本仓库也支持用 SSH 推送发布。在包含 `publish-personal.yml` 的独立 checkout 中，从包含源码标签的提交新建 `release-upload/v<版本>` 分支，将上述三个文件放入 `bundle/`，用 `git add -f bundle/` 提交后推送该分支。校验清单用小写 SHA-256，按 Windows ZIP、APK 顺序各写一行。工作流核对标签、证书和附件哈希后创建预发布。确认三个附件均已发布后可删除临时上传分支，安装包不会进入 `main`。
 
 超过 Git 单文件限制的 APK 可先压缩成 `<完整 APK 文件名>.zip`，ZIP 根目录内只放原名 APK。工作流解压后按清单验证原始文件，只发布原始 APK。
 

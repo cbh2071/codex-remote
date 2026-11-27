@@ -26,7 +26,7 @@ class Repository(private val context: Context) {
     internal val tailnet = EmbeddedTailnet(context)
     private fun hostApi(host: Host) = HostApi(host, if (tailnet.enabled && connectionKind(host.url) == "Tailscale") tailnet.socketFactory(host.url) else null)
     internal suspend fun fetchAppUpdate(progress: (Float) -> Unit): String? {
-        return fetchAndroidUpdate(context, store, progress)
+        return fetchAndroidUpdate(context, progress)
     }
     internal suspend fun toggleTailnet(enabled: Boolean) = withContext(Dispatchers.IO) {
         tailnet.setEnabled(enabled)
@@ -39,7 +39,7 @@ class Repository(private val context: Context) {
         }
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val store = SecureStore(context)
+    val store = SecureStore(context).apply { remove("github-release-read-token") }
     private val appearance = context.getSharedPreferences("appearance", Context.MODE_PRIVATE)
     internal val themeMode = MutableStateFlow(ThemeMode.entries.find { it.name == appearance.getString("theme", null) } ?: ThemeMode.SYSTEM)
     internal fun selectTheme(mode: ThemeMode) {
@@ -324,15 +324,20 @@ class Repository(private val context: Context) {
         require(ownsApi(id, api) && result.optString("hostId") == id && result.optString("instanceId") == instance) { "电脑连接已变化，请刷新" }
         result.getJSONObject("page")
     }
-    suspend fun operate(key: ThreadKey, type: String, fields: JSONObject = JSONObject()): String = withContext(Dispatchers.IO) {
+    suspend fun operate(key: ThreadKey, type: String, fields: JSONObject = JSONObject(), expectedInstance: String? = null, expectedDesktopTools: Boolean? = null): String = withContext(Dispatchers.IO) {
       operationGate.run(key.hostId) {
         val host = states.value[key.hostId] ?: error("电脑已移除")
         require(host.online && host.compatible) { "电脑离线或原生协议尚未就绪；只保存草稿，不排队执行" }
         val history = histories.value[key] ?: error("请先刷新会话状态")
         require(history.optString("instanceId") == host.instance) { "实例已经改变，请刷新" }
+        require(expectedInstance == null || expectedInstance == host.instance) { "电脑连接已变化，请重新确认" }
+        require(expectedDesktopTools == null || expectedDesktopTools == history.optBoolean("desktopTools")) { "会话控制方式已变化，请重新确认" }
         if (type == "model") require(fields.optString("catalogInstanceId") == host.instance) { "模型目录所属实例已变化，请重新选择" }
         if (type == "edit") require(fields.optString("editInstanceId") == host.instance) { "编辑所属实例已变化，请重新打开编辑" }
-        val body = JSONObject(fields.toString()).put("hostId", key.hostId).put("instanceId", host.instance).put("threadId", key.threadId).put("turnId", history.optString("activeTurnId")).put("operationId", UUID.randomUUID().toString()).put("type", type)
+        val turn = history.optString("activeTurnId")
+        require(!fields.has("turnId") || fields.getString("turnId") == turn) { "会话轮次已变化，请重新确认" }
+        require(type !in setOf("steer", "interrupt") || turn.isNotEmpty() && history.optBoolean("live", true)) { "当前连接无法实时控制这一轮" }
+        val body = JSONObject(fields.toString()).put("hostId", key.hostId).put("instanceId", host.instance).put("threadId", key.threadId).put("turnId", turn).put("operationId", UUID.randomUUID().toString()).put("type", type)
         if (type in setOf("send", "steer") && history.optBoolean("desktopTools")) body.put("latestTurnId", history.optString("latestTurnId"))
         val api = apis[key.hostId] ?: error("电脑未连接")
         val pendingName = "pending-${key.hostId}"; val old = JSONObject(store.get(pendingName, "{}"))

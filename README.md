@@ -12,10 +12,10 @@ An unofficial Android companion for monitoring and controlling existing Codex de
 
 ## 下载
 
-从[本仓库的 Releases](https://github.com/cbh2071/codex-remote/releases) 下载自用版安装包。仓库私有期间，需要有读取权限的 GitHub 账号。
+自用版安装包可从[本仓库的公开 Releases](https://github.com/cbh2071/codex-remote/releases) 匿名下载。
 
 - Android 10 及以上使用 `codex-suixing-preview-<版本码>-<版本>.apk`。已安装本仓库旧预览版的用户可直接覆盖，保留配对记录。上游正式版使用独立包名，可与本版并存。
-- 从 0.1.12 起，在「我的电脑 → 检查并更新」直接从本仓库下载新版，电脑关机也能更新。私有仓库首次检查时点「配置仓库令牌」，填写仅此仓库的 fine-grained token，授予 Contents 只读权限。安装前仍需在 Android 系统界面确认。
+- 从 0.1.12 起，「我的电脑 → 检查并更新」可直接从本仓库下载新版，电脑关机也能更新。旧版的仓库令牌可以留空。0.1.15 起自动移除手机上保存的旧更新令牌，匿名下载后在 Android 系统界面确认安装。
 - Windows x64 使用同一 Release 中的便携 ZIP，解压后运行 `CodexRemote.exe`。
 - 发布页同时提供源码和 `SHA256SUMS.txt`。源码使用 MIT 许可证；第三方依赖遵守各自许可证。
 - 自行构建使用自己的签名密钥；不同签名不能覆盖安装维护者的 APK。私钥不随源码或 Release 公开。

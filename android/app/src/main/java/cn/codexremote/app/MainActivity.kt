@@ -297,9 +297,9 @@ private fun HostsScreen(hosts: List<HostState>, repo: Repository, background: Bo
 }
 
 @Composable
-private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
+internal fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
     val histories by repo.histories.collectAsState(); val view = histories[key]; val scope = rememberCoroutineScope()
-    var draft by remember(key) { mutableStateOf(repo.draft(key)) }; var busy by remember(key) { mutableStateOf(false) }; var stopConfirm by remember { mutableStateOf(false) }
+    var draft by remember(key) { mutableStateOf(repo.draft(key)) }; var busy by remember(key) { mutableStateOf(false) }; var stopTurn by remember(key, host?.instance) { mutableStateOf<String?>(null) }
     var latestRequest by remember(key) { mutableIntStateOf(0) }
     var modelDialog by remember(key) { mutableStateOf(false) }; var editTarget by remember(key) { mutableStateOf<JSONObject?>(null) }
     var selectedImages by remember(key) { mutableStateOf(repo.imageDrafts.list(key)) }
@@ -317,6 +317,14 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
     val active = view?.optString("activeTurnId").orEmpty(); val live = view?.optBoolean("live", true) == true
     val enabled = host?.online == true && host.compatible && view != null && live && !busy
     val desktopTools = view?.optBoolean("desktopTools") == true
+    val running = active.isNotEmpty() || desktopTools && host?.threads?.any {
+        it.optString("id") == key.threadId && (it.optJSONObject("status")?.optString("type") ?: it.optString("status")) == "active"
+    } == true
+    val actionLabel = when {
+        running && desktopTools -> "发送后续消息"
+        active.isNotEmpty() -> "引导本轮"
+        else -> "发送指令"
+    }
     val textOnlySend = desktopTools && view?.optBoolean("canSendText") == true && host?.online == true && host.compatible && !busy
     var nextModel by remember(key, host?.instance) { mutableStateOf<JSONObject?>(null) }
     var resend by remember(key) { mutableStateOf<String?>(null) }
@@ -324,12 +332,13 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
     fun operate(type: String, fields: JSONObject = JSONObject(), success: () -> Unit = {}) {
         if (busy) return
         busy = true
+        val instance = view?.optString("instanceId")
         scope.launch {
             try {
-                if (desktopTools && type in setOf("send", "steer")) nextModel?.let { choice ->
+                if (desktopTools && type == "send") nextModel?.let { choice ->
                     for (field in listOf("model", "effort", "expectedProvider")) fields.put(field, choice.getString(field))
                 }
-                repo.message.value = repo.operate(key, type, fields)
+                repo.message.value = repo.operate(key, type, fields, instance, desktopTools)
                 if (type == "send" || type == "steer") { nextModel = null; if (draft == fields.optString("text")) { draft = ""; repo.draft(key, "") }; selectedImages = repo.imageDrafts.list(key); latestRequest++ }
                 if (type == "edit") latestRequest++
                 success()
@@ -353,15 +362,16 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
             reuse = if (textOnlySend) ({ text -> resend = text }) else null) { request -> RequestCard(request, enabled, { fields -> operate("decision", fields) }, { fields -> operate("answer", fields) }) }
         Column(Modifier.fillMaxWidth().background(appColors.surface).imePadding().padding(horizontal = 10.dp, vertical = 5.dp)) {
             LatestFilesButton(view)
-            LatestThought(view, active.isNotEmpty(), enabled) { stopConfirm = true }
+            LatestThought(view, running, enabled, live && active.isNotEmpty()) { stopTurn = active }
+            if (running && desktopTools) Text("电脑仅支持后续消息。停止和引导本轮请在桌面操作。", fontSize = 12.sp, color = appColors.onSurfaceVariant)
             DraftImages(selectedImages, "${key.hostId}/${key.threadId}/draft", !busy, { id -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repo.imageDrafts.bytes(key, id) } }) { id -> repo.imageDrafts.remove(key, setOf(id)); selectedImages = repo.imageDrafts.list(key) }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { modelDialog = true }, enabled = modelEnabled, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.heightIn(min = 32.dp).weight(1f)) { Text(nextModel?.optString("model") ?: view?.optString("model")?.substringAfterLast('/')?.ifBlank { "选择模型" } ?: "选择模型", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Icon(Icons.Outlined.ExpandMore, "切换模型", Modifier.size(15.dp)) }
             }
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 IconButton(onClick = { pickerTarget = key; busy = true; imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !desktopTools && !busy && selectedImages.size < MAX_IMAGES, modifier = Modifier.size(40.dp)) { Icon(Icons.Outlined.AddPhotoAlternate, "添加图片") }
-                OutlinedTextField(draft, { draft = it; repo.draft(key, it) }, placeholder = { Text(if (active.isNotEmpty()) "追加指示…" else "发送指令…", fontSize = 14.sp) }, textStyle = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).heightIn(max = 120.dp), shape = RoundedCornerShape(14.dp), maxLines = 4)
-                FilledIconButton(onClick = { operate(if (active.isEmpty()) "send" else "steer", JSONObject().put("text", draft).put("draftImageIds", JSONArray(selectedImages.map { it.id }))) }, enabled = enabled && (draft.isNotBlank() || selectedImages.isNotEmpty()) || textOnlySend && draft.isNotBlank() && selectedImages.isEmpty(), modifier = Modifier.size(48.dp)) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.AutoMirrored.Outlined.Send, "发送") }
+                OutlinedTextField(draft, { draft = it; repo.draft(key, it) }, placeholder = { Text("$actionLabel…", fontSize = 14.sp) }, textStyle = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).heightIn(max = 120.dp), shape = RoundedCornerShape(14.dp), maxLines = 4)
+                FilledIconButton(onClick = { operate(if (desktopTools || active.isEmpty()) "send" else "steer", JSONObject().put("turnId", active).put("text", draft).put("draftImageIds", JSONArray(selectedImages.map { it.id }))) }, enabled = enabled && (draft.isNotBlank() || selectedImages.isNotEmpty()) || textOnlySend && draft.isNotBlank() && selectedImages.isEmpty(), modifier = Modifier.size(48.dp)) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.AutoMirrored.Outlined.Send, actionLabel) }
             }
         }
     }
@@ -373,11 +383,13 @@ private fun ThreadScreen(key: ThreadKey, repo: Repository, host: HostState?) {
         AlertDialog(onDismissRequest = { if (!busy) resend = null }, title = { Text("编辑后作为新消息发送") }, text = {
             Column { Text("新消息将追加到当前会话，保留之前的对话。"); OutlinedTextField(revised, { revised = it }, enabled = !busy, maxLines = 9) }
         }, confirmButton = { TextButton(enabled = textOnlySend && revised.isNotBlank() && revised.length <= 32000, onClick = {
-            operate(if (active.isEmpty()) "send" else "steer", JSONObject().put("text", revised)) { resend = null }
+            operate("send", JSONObject().put("turnId", active).put("text", revised)) { resend = null }
         }) { Text("发送新消息") } }, dismissButton = { TextButton(enabled = !busy, onClick = { resend = null }) { Text("取消") } })
     }
     editTarget?.let { target -> EditMessageDialog(key, target, view, repo, enabled, { editTarget = null }) { fields, clear -> operate("edit", fields) { clear(); editTarget = null } } }
-    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("中断 ${host?.host?.name} 上的任务？") }, text = { Text("只中断当前会话的这一轮，不影响其他电脑。") }, confirmButton = { TextButton(onClick = { stopConfirm = false; operate("interrupt") }) { Text("确认中断") } }, dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("继续运行") } })
+    stopTurn?.let { target ->
+        AlertDialog(onDismissRequest = { stopTurn = null }, title = { Text("停止 ${host?.host?.name} 上的本轮任务？") }, text = { Text(if (target == active) "会话记录会保留。" else "这一轮已经结束。") }, confirmButton = { TextButton(enabled = enabled && target == active, onClick = { stopTurn = null; operate("interrupt", JSONObject().put("turnId", target)) }) { Text("停止本轮") } }, dismissButton = { TextButton(onClick = { stopTurn = null }) { Text("取消") } })
+    }
 }
 
 @Composable
